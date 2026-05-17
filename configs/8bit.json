@@ -1,0 +1,231 @@
+{
+  "name": "8-Bit CPU",
+  "description": "A simple 8-bit RISC-like CPU",
+  "version": "1.0",
+  
+  "data_bus": { "width": 8 },
+  "address_bus": { "width": 16 },
+  
+  "memory": { "size": 65536 },
+  
+  "registers": {
+    "general_purpose": [
+      { "name": "R0", "width": 8, "initial": 0 },
+      { "name": "R1", "width": 8, "initial": 0 },
+      { "name": "R2", "width": 8, "initial": 0 },
+      { "name": "R3", "width": 8, "initial": 0 }
+    ],
+    "special": [
+      { "name": "PC", "width": 16, "initial": 0, "role": "pc" },
+      { "name": "SP", "width": 16, "initial": 65535, "role": "sp" },
+      { "name": "FLAGS", "width": 8, "initial": 0, "role": "flags" },
+      { "name": "IR", "width": 8, "initial": 0, "role": "ir", "internal": true }
+    ]
+  },
+  
+  "alu": {
+    "operations": [
+      { "name": "ADD", "code": 0, "format": "RR", "latency": 1 },
+      { "name": "SUB", "code": 1, "format": "RR", "latency": 1 },
+      { "name": "MUL", "code": 2, "format": "RR", "latency": 2 },
+      { "name": "DIV", "code": 3, "format": "RR", "latency": 4 },
+      { "name": "AND", "code": 4, "format": "RR", "latency": 1 },
+      { "name": "OR", "code": 5, "format": "RR", "latency": 1 },
+      { "name": "XOR", "code": 6, "format": "RR", "latency": 1 },
+      { "name": "NOT", "code": 7, "format": "R", "latency": 1 },
+      { "name": "SHL", "code": 8, "format": "RR", "latency": 1 },
+      { "name": "SHR", "code": 9, "format": "RR", "latency": 1 },
+      { "name": "CMP", "code": 10, "format": "RR", "latency": 1 }
+    ]
+  },
+  
+  "instruction_set": {
+    "encoding": "variable",
+    "fixed_width": 16,
+    
+    "instructions": [
+      {
+        "name": "MOV",
+        "opcode": 0,
+        "format": "RR",
+        "encoding": [0, "dest", "src"],
+        "description": "Move data between registers"
+      },
+      {
+        "name": "MOVI",
+        "opcode": 1,
+        "format": "RI",
+        "encoding": [1, "dest", "imm8"],
+        "description": "Move immediate value to register"
+      },
+      {
+        "name": "LOAD",
+        "opcode": 2,
+        "format": "R_M",
+        "encoding": [2, "dest", "addr_reg"],
+        "description": "Load from memory address in register"
+      },
+      {
+        "name": "STORE",
+        "opcode": 3,
+        "format": "R_M",
+        "encoding": [3, "src", "addr_reg"],
+        "description": "Store to memory address in register"
+      },
+      {
+        "name": "LOADI",
+        "opcode": 4,
+        "format": "RI",
+        "encoding": [4, "dest", "imm16"],
+        "description": "Load from immediate memory address"
+      },
+      {
+        "name": "STORI",
+        "opcode": 5,
+        "format": "RI",
+        "encoding": [5, "src", "imm16"],
+        "description": "Store to immediate memory address"
+      },
+      {
+        "name": "ADD",
+        "opcode": 10,
+        "format": "RR",
+        "encoding": [10, "dest", "src"],
+        "description": "Add: dest = dest + src"
+      },
+      {
+        "name": "SUB",
+        "opcode": 11,
+        "format": "RR",
+        "encoding": [11, "dest", "src"],
+        "description": "Subtract: dest = dest - src"
+      },
+      {
+        "name": "MUL",
+        "opcode": 12,
+        "format": "RR",
+        "encoding": [12, "dest", "src"],
+        "description": "Multiply: dest = dest * src"
+      },
+      {
+        "name": "DIV",
+        "opcode": 13,
+        "format": "RR",
+        "encoding": [13, "dest", "src"],
+        "description": "Divide: dest = dest / src"
+      },
+      {
+        "name": "AND",
+        "opcode": 14,
+        "format": "RR",
+        "encoding": [14, "dest", "src"],
+        "description": "Bitwise AND"
+      },
+      {
+        "name": "OR",
+        "opcode": 15,
+        "format": "RR",
+        "encoding": [15, "dest", "src"],
+        "description": "Bitwise OR"
+      },
+      {
+        "name": "XOR",
+        "opcode": 16,
+        "format": "RR",
+        "encoding": [16, "dest", "src"],
+        "description": "Bitwise XOR"
+      },
+      {
+        "name": "NOT",
+        "opcode": 17,
+        "format": "R",
+        "encoding": [17, "dest"],
+        "description": "Bitwise NOT"
+      },
+      {
+        "name": "SHL",
+        "opcode": 18,
+        "format": "RR",
+        "encoding": [18, "dest", "src"],
+        "description": "Shift left: dest = dest << src"
+      },
+      {
+        "name": "SHR",
+        "opcode": 19,
+        "format": "RR",
+        "encoding": [19, "dest", "src"],
+        "description": "Shift right: dest = dest >> src"
+      },
+      {
+        "name": "CMP",
+        "opcode": 20,
+        "format": "RR",
+        "encoding": [20, "a", "b"],
+        "description": "Compare a and b, set FLAGS"
+      },
+      {
+        "name": "JMP",
+        "opcode": 30,
+        "format": "I",
+        "encoding": [30, "address"],
+        "description": "Unconditional jump"
+      },
+      {
+        "name": "JE",
+        "opcode": 31,
+        "format": "I",
+        "encoding": [31, "address"],
+        "description": "Jump if equal (ZERO flag set)"
+      },
+      {
+        "name": "JNE",
+        "opcode": 32,
+        "format": "I",
+        "encoding": [32, "address"],
+        "description": "Jump if not equal (ZERO flag clear)"
+      },
+      {
+        "name": "JG",
+        "opcode": 33,
+        "format": "I",
+        "encoding": [33, "address"],
+        "description": "Jump if greater (not ZERO and not CARRY)"
+      },
+      {
+        "name": "PUSH",
+        "opcode": 40,
+        "format": "R",
+        "encoding": [40, "src"],
+        "description": "Push register to stack"
+      },
+      {
+        "name": "POP",
+        "opcode": 41,
+        "format": "R",
+        "encoding": [41, "dest"],
+        "description": "Pop from stack to register"
+      },
+      {
+        "name": "CALL",
+        "opcode": 42,
+        "format": "I",
+        "encoding": [42, "address"],
+        "description": "Call subroutine"
+      },
+      {
+        "name": "RET",
+        "opcode": 43,
+        "format": "I",
+        "encoding": [43],
+        "description": "Return from subroutine"
+      },
+      {
+        "name": "HLT",
+        "opcode": 255,
+        "format": "I",
+        "encoding": [255],
+        "description": "Halt the CPU"
+      }
+    ]
+  }
+}

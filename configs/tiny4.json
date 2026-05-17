@@ -1,0 +1,32 @@
+{
+  "name": "Tiny4",
+  "data_bus": { "width": 4 },
+  "address_bus": { "width": 4 },
+  "memory": { "size": 16 },
+  "registers": {
+    "general_purpose": [
+      { "name": "A", "width": 4, "initial": 0 },
+      { "name": "B", "width": 4, "initial": 0 }
+    ],
+    "special": [
+      { "name": "PC", "width": 4, "initial": 0, "role": "pc" }
+    ]
+  },
+  "alu": {
+    "operations": [
+      { "name": "ADD", "code": 0, "format": "RR", "latency": 1 },
+      { "name": "SUB", "code": 1, "format": "RR", "latency": 1 },
+      { "name": "AND", "code": 2, "format": "RR", "latency": 1 },
+      { "name": "OR", "code": 3, "format": "RR", "latency": 1 }
+    ]
+  },
+  "instruction_set": {
+    "instructions": [
+      { "name": "MOV", "opcode": 0, "format": "RR", "encoding": [0, "dest", "src"] },
+      { "name": "ADD", "opcode": 1, "format": "RR", "encoding": [1, "dest", "src"] },
+      { "name": "AND", "opcode": 2, "format": "RR", "encoding": [2, "dest", "src"] },
+      { "name": "OR", "opcode": 3, "format": "RR", "encoding": [3, "dest", "src"] },
+      { "name": "HLT", "opcode": 15, "format": "I", "encoding": [15] }
+    ]
+  }
+}
