@@ -1,168 +1,233 @@
 #include "alu.hpp"
+#include <map>
+#include <sstream>
 #include <stdexcept>
 
-ALU::ALU(const Config &config) : data_width_(config.data_width) {
-    if (data_width_ >= 64) {
-        mask_ = UINT64_MAX;
-        sign_bit_ = 1ULL << 63;
-    } else {
-        mask_ = (1ULL << data_width_) - 1;
-        sign_bit_ = 1ULL << (data_width_ - 1);
+ALU::ALU(const Config &config) : config_(config) {
+    mask_ = (config.data_width == 64) ? ~0ULL : (1ULL << config.data_width) - 1;
+    sign_bit_ = 1ULL << (config.data_width - 1);
+    compile_expressions();
+}
+
+void ALU::compile_expressions() {
+    for (const auto &op : config_.alu_ops) {
+        auto tokens = tokenize(op.expression);
+        compiled_ops_[op.name] = shunting_yard(tokens);
     }
+}
 
-    for (const auto &op_def : config.alu_ops) {
-        OpImpl impl;
-        impl.latency = op_def.latency;
-        impl.format = op_def.format;
-        impl.name = op_def.name;
-
-        if (op_def.name == "ADD")
-            impl.func = add;
-        else if (op_def.name == "SUB")
-            impl.func = sub;
-        else if (op_def.name == "MUL")
-            impl.func = mul;
-        else if (op_def.name == "DIV")
-            impl.func = div_u;
-        else if (op_def.name == "AND")
-            impl.func = and_op;
-        else if (op_def.name == "OR")
-            impl.func = or_op;
-        else if (op_def.name == "XOR")
-            impl.func = xor_op;
-        else if (op_def.name == "NOT")
-            impl.func = not_op;
-        else if (op_def.name == "SHL")
-            impl.func = shl;
-        else if (op_def.name == "SHR")
-            impl.func = shr;
-        else {
-            impl.func = add;
+std::vector<ALU::Token> ALU::tokenize(const std::string &expr) {
+    std::vector<Token> tokens;
+    for (size_t i = 0; i < expr.length(); ++i) {
+        char ch = expr[i];
+        if (isspace(ch) || ch == '(' || ch == ')') {
+            if (ch == '(')
+                tokens.push_back({TokenType::LITERAL, 999});
+            if (ch == ')')
+                tokens.push_back({TokenType::LITERAL, 888});
+            continue;
         }
 
-        ops_[op_def.code] = impl;
-        name_to_code_[op_def.name] = op_def.code;
+        if (isdigit(ch)) {
+            std::string s;
+            while (i < expr.length() && (isdigit(expr[i]) || expr[i] == 'x'))
+                s += expr[i++];
+            i--;
+            tokens.push_back({TokenType::LITERAL, std::stoull(s, nullptr, 0)});
+        } else if (ch == 'a' || ch == 'b' || ch == 'c') {
+            if (ch == 'a')
+                tokens.push_back({TokenType::OPERAND_A});
+            else if (ch == 'b')
+                tokens.push_back({TokenType::OPERAND_B});
+            else
+                tokens.push_back({TokenType::OPERAND_C});
+        } else {
+            // Match operators
+            if (ch == '+')
+                tokens.push_back({TokenType::OP_ADD});
+            else if (ch == '-')
+                tokens.push_back({TokenType::OP_SUB});
+            else if (ch == '*')
+                tokens.push_back({TokenType::OP_MUL});
+            else if (ch == '&')
+                tokens.push_back({TokenType::OP_AND});
+            else if (ch == '|')
+                tokens.push_back({TokenType::OP_OR});
+            else if (ch == '^')
+                tokens.push_back({TokenType::OP_XOR});
+            else if (ch == '~')
+                tokens.push_back({TokenType::OP_NOT});
+            else if (ch == '<' && expr[i + 1] == '<') {
+                tokens.push_back({TokenType::OP_SHL});
+                i++;
+            } else if (ch == '>' && expr[i + 1] == '>') {
+                tokens.push_back({TokenType::OP_SHR});
+                i++;
+            }
+        }
     }
+    return tokens;
 }
 
-ALUResult ALU::execute(const std::string &op_name, uint64_t a, uint64_t b) {
-    auto it = name_to_code_.find(op_name);
-    if (it == name_to_code_.end()) {
-        throw std::runtime_error("Unknown ALU operation: " + op_name);
-    }
-    return execute(it->second, a, b);
-}
+// Shunting-Yard
+std::vector<ALU::Token> ALU::shunting_yard(const std::vector<Token> &tokens) {
+    std::vector<Token> output;
+    std::stack<Token> ops;
 
-ALUResult ALU::execute(uint8_t opcode, uint64_t a, uint64_t b) {
-    auto it = ops_.find(opcode);
-    if (it == ops_.end()) {
-        throw std::runtime_error("Unknown ALU opcode: " +
-                                 std::to_string(opcode));
-    }
-
-    const auto &op = it->second;
-
-    a &= mask_;
-    b &= mask_;
-
-    uint64_t result = op.func(a, b);
-    result &= mask_;
-
-    return make_result(result, a, b, op.name);
-}
-
-int ALU::get_latency(const std::string &op_name) const {
-    auto it = name_to_code_.find(op_name);
-    if (it == name_to_code_.end()) {
-        return 1;
-    }
-    return get_latency(it->second);
-}
-
-int ALU::get_latency(uint8_t opcode) const {
-    auto it = ops_.find(opcode);
-    if (it == ops_.end()) {
-        return 1;
-    }
-    return it->second.latency;
-}
-
-bool ALU::has_operation(const std::string &op_name) const {
-    return name_to_code_.find(op_name) != name_to_code_.end();
-}
-
-ALUResult ALU::make_result(uint64_t value, uint64_t a, uint64_t b,
-                           const std::string &op) {
-    bool zero = calculate_zero(value);
-    bool negative = calculate_negative(value);
-    bool carry = false;
-    bool overflow = false;
-
-    if (op == "ADD") {
-        carry = calculate_carry_add(a, b, value);
-        overflow = calculate_overflow_add(a, b, value);
-    } else if (op == "SUB") {
-        carry = calculate_carry_sub(a, b, value);
-        overflow = calculate_overflow_sub(a, b, value);
-    }
-
-    return ALUResult(value, zero, carry, overflow, negative);
-}
-
-bool ALU::calculate_zero(uint64_t value) const { return (value & mask_) == 0; }
-
-bool ALU::calculate_carry_add(uint64_t a, uint64_t b, uint64_t result) const {
-    uint64_t max_val = mask_;
-    return (static_cast<uint64_t>(a) + static_cast<uint64_t>(b)) > max_val;
-}
-
-bool ALU::calculate_carry_sub(uint64_t a, uint64_t b, uint64_t result) const {
-    return a < b;
-}
-
-bool ALU::calculate_overflow_add(uint64_t a, uint64_t b,
-                                 uint64_t result) const {
-    bool a_sign = (a & sign_bit_) != 0;
-    bool b_sign = (b & sign_bit_) != 0;
-    bool r_sign = (result & sign_bit_) != 0;
-    return (a_sign == b_sign) && (a_sign != r_sign);
-}
-
-bool ALU::calculate_overflow_sub(uint64_t a, uint64_t b,
-                                 uint64_t result) const {
-    bool a_sign = (a & sign_bit_) != 0;
-    bool b_sign = (b & sign_bit_) != 0;
-    bool r_sign = (result & sign_bit_) != 0;
-    return (a_sign != b_sign) && (a_sign != r_sign);
-}
-
-bool ALU::calculate_negative(uint64_t value) const {
-    return (value & sign_bit_) != 0;
-}
-
-uint64_t ALU::add(uint64_t a, uint64_t b) { return a + b; }
-
-uint64_t ALU::sub(uint64_t a, uint64_t b) { return a - b; }
-
-uint64_t ALU::mul(uint64_t a, uint64_t b) { return a * b; }
-
-uint64_t ALU::div_u(uint64_t a, uint64_t b) {
-    if (b == 0)
+    auto precedence = [](TokenType t) {
+        if (t == TokenType::OP_NOT)
+            return 4;
+        if (t == TokenType::OP_MUL || t == TokenType::OP_DIV)
+            return 3;
+        if (t == TokenType::OP_ADD || t == TokenType::OP_SUB)
+            return 2;
+        if (t == TokenType::OP_AND || t == TokenType::OP_OR ||
+            t == TokenType::OP_XOR)
+            return 1;
         return 0;
-    return a / b;
+    };
+
+    for (const auto &t : tokens) {
+        if (t.type <= TokenType::LITERAL && t.value != 999 && t.value != 888) {
+            output.push_back(t);
+        } else if (t.value == 999) { // '('
+            ops.push(t);
+        } else if (t.value == 888) { // ')'
+            while (!ops.empty() && ops.top().value != 999) {
+                output.push_back(ops.top());
+                ops.pop();
+            }
+            if (!ops.empty())
+                ops.pop();
+        } else {
+            while (!ops.empty() && ops.top().value != 999 &&
+                   precedence(ops.top().type) >= precedence(t.type)) {
+                output.push_back(ops.top());
+                ops.pop();
+            }
+            ops.push(t);
+        }
+    }
+    while (!ops.empty()) {
+        output.push_back(ops.top());
+        ops.pop();
+    }
+    return output;
 }
 
-uint64_t ALU::and_op(uint64_t a, uint64_t b) { return a & b; }
-
-uint64_t ALU::or_op(uint64_t a, uint64_t b) { return a | b; }
-
-uint64_t ALU::xor_op(uint64_t a, uint64_t b) { return a ^ b; }
-
-uint64_t ALU::not_op(uint64_t a, uint64_t b) {
-    (void)b;
-    return ~a;
+uint64_t ALU::evaluate_rpn(const std::vector<Token> &rpn, uint64_t a,
+                           uint64_t b, uint64_t c) {
+    std::stack<uint64_t> s;
+    for (const auto &t : rpn) {
+        if (t.type == TokenType::OPERAND_A)
+            s.push(a);
+        else if (t.type == TokenType::OPERAND_B)
+            s.push(b);
+        else if (t.type == TokenType::OPERAND_C)
+            s.push(c);
+        else if (t.type == TokenType::LITERAL)
+            s.push(t.value);
+        else if (t.type == TokenType::OP_NOT) {
+            uint64_t v = s.top();
+            s.pop();
+            s.push(~v);
+        } else {
+            uint64_t right = s.top();
+            s.pop();
+            uint64_t left = s.top();
+            s.pop();
+            switch (t.type) {
+            case TokenType::OP_ADD:
+                s.push(left + right);
+                break;
+            case TokenType::OP_SUB:
+                s.push(left - right);
+                break;
+            case TokenType::OP_MUL:
+                s.push(left * right);
+                break;
+            case TokenType::OP_AND:
+                s.push(left & right);
+                break;
+            case TokenType::OP_OR:
+                s.push(left | right);
+                break;
+            case TokenType::OP_XOR:
+                s.push(left ^ right);
+                break;
+            case TokenType::OP_SHL:
+                s.push(left << right);
+                break;
+            case TokenType::OP_SHR:
+                s.push(left >> right);
+                break;
+            default:
+                break;
+            }
+        }
+    }
+    return s.top() & mask_;
 }
 
-uint64_t ALU::shl(uint64_t a, uint64_t b) { return a << (b & 0x3F); }
+ALU::FullResult ALU::execute(const std::string &op_name, uint64_t a, uint64_t b,
+                             uint64_t c) {
+    const auto &rpn = compiled_ops_.at(op_name);
 
-uint64_t ALU::shr(uint64_t a, uint64_t b) { return a >> (b & 0x3F); }
+    const ALUOp *op_def = nullptr;
+    for (const auto &op : config_.alu_ops) {
+        if (op.name == op_name) {
+            op_def = &op;
+            break;
+        }
+    }
+
+    uint64_t res = evaluate_rpn(rpn, a, b, c);
+    uint64_t final_res = res & mask_;
+
+    uint64_t flags_out = 0;
+
+    for (const auto &[flag_name, logic_type] : op_def->flag_rules) {
+
+        int bit_pos = -1;
+        for (const auto &f_def : config_.alu_flags) {
+            if (f_def.name == flag_name) {
+                bit_pos = f_def.bit;
+                break;
+            }
+        }
+        if (bit_pos == -1)
+            continue;
+
+        bool flag_val = false;
+
+        if (logic_type == "result_zero") {
+            flag_val = (final_res == 0);
+        } else if (logic_type == "result_negative") {
+            flag_val = (final_res & sign_bit_) != 0;
+        } else if (logic_type == "carry_add") {
+            flag_val = (a > mask_ - b);
+        } else if (logic_type == "carry_sub") {
+            flag_val = (a < b);
+        } else if (logic_type == "overflow_add") {
+            // Logic: (a,b same sign) AND (res different sign)
+            flag_val = !((a ^ b) & sign_bit_) && ((a ^ final_res) & sign_bit_);
+        } else if (logic_type == "overflow_sub") {
+            // Logic: (a,b different sign) AND (res different sign than a)
+            flag_val = ((a ^ b) & sign_bit_) && ((a ^ final_res) & sign_bit_);
+        } else if (logic_type == "parity") {
+            int count = 0;
+            uint64_t temp = final_res & 0xFF;
+            while (temp) {
+                count += (temp & 1);
+                temp >>= 1;
+            }
+            flag_val = (count % 2 == 0);
+        }
+
+        if (flag_val) {
+            flags_out |= (1ULL << bit_pos);
+        }
+    }
+
+    return {final_res, flags_out};
+}

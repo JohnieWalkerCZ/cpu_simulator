@@ -2,7 +2,6 @@
 #include <cstdint>
 #include <fstream>
 #include <stdexcept>
-#include <string>
 #include <unordered_set>
 
 Config Config::from_json(const nlohmann::json &j) {
@@ -15,7 +14,6 @@ Config Config::from_json(const nlohmann::json &j) {
 
     if (j.contains("registers")) {
         const auto &regs = j["registers"];
-
         if (regs.contains("general_purpose")) {
             for (const auto &r : regs["general_purpose"]) {
                 RegisterDef reg;
@@ -26,7 +24,6 @@ Config Config::from_json(const nlohmann::json &j) {
                 cfg.registers.push_back(reg);
             }
         }
-
         if (regs.contains("special")) {
             for (const auto &r : regs["special"]) {
                 RegisterDef reg;
@@ -39,14 +36,36 @@ Config Config::from_json(const nlohmann::json &j) {
         }
     }
 
-    if (j.contains("alu") && j["alu"].contains("operations")) {
-        for (const auto &op : j["alu"]["operations"]) {
-            ALUOp alu_op;
-            alu_op.name = op.at("name").get<std::string>();
-            alu_op.code = op.at("code").get<uint8_t>();
-            alu_op.format = op.at("format").get<std::string>();
-            alu_op.latency = op.at("latency").get<int>();
-            cfg.alu_ops.push_back(alu_op);
+    if (j.contains("alu")) {
+        const auto &alu_json = j["alu"];
+
+        if (alu_json.contains("flags")) {
+            for (const auto &f : alu_json["flags"]) {
+                FlagDef flag;
+                flag.name = f.at("name").get<std::string>();
+                flag.bit = f.at("bit").get<int>();
+                flag.type = f.at("type").get<std::string>();
+                cfg.alu_flags.push_back(flag);
+            }
+        }
+
+        if (alu_json.contains("operations")) {
+            for (const auto &op : alu_json["operations"]) {
+                ALUOp alu_op;
+                alu_op.name = op.at("name").get<std::string>();
+                alu_op.code = op.value("code", (uint8_t)0);
+                alu_op.expression = op.at("expression").get<std::string>();
+                alu_op.latency = op.value("latency", 1);
+
+                if (op.contains("flag_rules")) {
+                    for (auto &[flag_name, logic_type] :
+                         op["flag_rules"].items()) {
+                        alu_op.flag_rules[flag_name] =
+                            logic_type.get<std::string>();
+                    }
+                }
+                cfg.alu_ops.push_back(alu_op);
+            }
         }
     }
 
@@ -60,9 +79,9 @@ Config Config::from_json(const nlohmann::json &j) {
 
             if (inst.contains("encoding")) {
                 for (const auto &enc : inst["encoding"]) {
-                    if (enc.is_number()) {
+                    if (enc.is_number())
                         ins.encoding.push_back(enc.get<int>());
-                    } else if (enc.is_string()) {
+                    else if (enc.is_string()) {
                         std::string token = enc.get<std::string>();
                         if (token == "dest")
                             ins.encoding.push_back(-1);
@@ -75,6 +94,30 @@ Config Config::from_json(const nlohmann::json &j) {
                         else
                             ins.encoding.push_back(-10);
                     }
+                }
+            }
+
+            if (inst.contains("microcode")) {
+                for (const auto &uop_json : inst["microcode"]) {
+                    MicroOp uop;
+                    uop.action = uop_json.at("action").get<std::string>();
+
+                    for (auto it = uop_json.begin(); it != uop_json.end();
+                         ++it) {
+                        if (it.key() != "action") {
+                            if (it.value().is_string()) {
+                                uop.args[it.key()] =
+                                    it.value().get<std::string>();
+                            } else if (it.value().is_number()) {
+                                uop.args[it.key()] =
+                                    std::to_string(it.value().get<int>());
+                            } else if (it.value().is_boolean()) {
+                                uop.args[it.key()] =
+                                    it.value().get<bool>() ? "true" : "false";
+                            }
+                        }
+                    }
+                    ins.microcode.push_back(uop);
                 }
             }
             cfg.instructions.push_back(ins);
@@ -148,8 +191,6 @@ bool Config::validate() const {
         if (alu_codes.count(op.code))
             return false;
         alu_codes.insert(op.code);
-        if (op.format != "RR" && op.format != "RI" && op.format != "R")
-            return false;
 
         if (op.latency < 1)
             return false;

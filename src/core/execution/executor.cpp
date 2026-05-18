@@ -1,0 +1,238 @@
+#include "executor.hpp"
+#include <cstdint>
+#include <stdexcept>
+#include <unordered_map>
+
+// Helper map to cache microcode for faster access
+static std::unordered_map<uint8_t, std::vector<MicroOp>> microcode_map;
+
+Executor::Executor(Config &config, RegisterFile &regs, Memory &mem, ALU &alu)
+    : config_(config), regs_(regs), mem_(mem), alu_(alu), decoder_(config) {
+
+    pc_idx_ = regs_.find_by_role("program_counter");
+    sp_idx_ = regs_.find_by_role("stack_pointer");
+    flags_idx_ = regs_.find_by_role("status_flags");
+
+    if (pc_idx_ == -1)
+        throw std::runtime_error("Executor: PC register role not found.");
+
+    // Load microcode definitions from config into a searchable map
+    for (const auto &inst : config_.instructions) {
+        if (inst.microcode.empty()) {
+            throw std::runtime_error("Instruction " + inst.name +
+                                     " has no microcode!");
+        }
+        microcode_map[inst.opcode] = inst.microcode;
+    }
+
+    reset();
+}
+
+void Executor::reset() {
+    state_ = ExecutionState::FETCH;
+    uop_index_ = 0;
+    units_fetched_ = 0;
+    halted_ = false;
+    cycles_ = 0;
+    current_inst_ = DecodedInstruction();
+}
+
+void Executor::step_instruction() {
+    // Run UOPs until we hit the FETCH state again or the CPU halts
+    // This allows one button to do a "Full Step"
+    do {
+        step_uop();
+    } while (state_ != ExecutionState::FETCH && !halted_);
+}
+
+void Executor::step_uop() {
+    if (halted_)
+        return;
+
+    switch (state_) {
+    case ExecutionState::FETCH: {
+        fetch_pc_ = regs_.get_pc();
+
+        current_inst_ = DecodedInstruction();
+
+        int unit_bits = config_.data_width;
+        uint64_t first_unit = mem_.read(static_cast<uint32_t>(fetch_pc_));
+        first_unit &= ((1ULL << unit_bits) - 1);
+
+        uint8_t opcode = decoder_.peek_opcode(first_unit);
+        int total_bits = decoder_.get_total_bits(opcode);
+        units_fetched_ = (total_bits + unit_bits - 1) / unit_bits;
+
+        uint64_t raw = first_unit;
+        for (int i = 1; i < units_fetched_; ++i) {
+            uint64_t next_unit =
+                mem_.read(static_cast<uint32_t>(fetch_pc_ + i));
+            next_unit &= ((1ULL << unit_bits) - 1);
+            raw = (raw << unit_bits) | next_unit;
+        }
+
+        current_inst_.raw_bits = raw;
+        state_ = ExecutionState::DECODE;
+        break;
+    }
+
+    case ExecutionState::DECODE: {
+        int fetched_bits = units_fetched_ * config_.data_width;
+
+        uint64_t first_word =
+            current_inst_.raw_bits >> (fetched_bits - config_.data_width);
+        uint8_t opcode = decoder_.peek_opcode(first_word);
+
+        current_inst_ = decoder_.decode(current_inst_.raw_bits, fetched_bits);
+
+        if (!current_inst_.is_valid)
+            throw std::runtime_error("Decode Error at PC " +
+                                     std::to_string(regs_.get_pc()) + " -> " +
+                                     current_inst_.error);
+
+        uop_index_ = 0;
+        state_ = ExecutionState::EXECUTE_UOPS;
+        break;
+    }
+
+    case ExecutionState::EXECUTE_UOPS: {
+        const auto &uops = microcode_map.at(current_inst_.opcode);
+        if (uop_index_ < uops.size()) {
+            perform_uop(uops[uop_index_]);
+            uop_index_++;
+        }
+        if (uop_index_ >= uops.size()) {
+            state_ = ExecutionState::DONE;
+        }
+        break;
+    }
+
+    case ExecutionState::DONE: {
+        if (regs_.get_pc() == fetch_pc_) {
+            regs_.increment_pc(units_fetched_);
+        }
+
+        cycles_++;
+        state_ = ExecutionState::FETCH;
+        break;
+    }
+    }
+}
+
+void Executor::perform_uop(const MicroOp &uop) {
+    if (uop.action == "copy") {
+        uint64_t val = resolve_operand(uop.args.at("source"));
+        write_operand(uop.args.at("dest"), val);
+    } else if (uop.action == "alu") {
+        uint64_t a = resolve_operand(uop.args.at("a"));
+        uint64_t b =
+            uop.args.count("b") ? resolve_operand(uop.args.at("b")) : 0;
+        uint64_t c =
+            uop.args.count("c") ? resolve_operand(uop.args.at("c")) : 0;
+
+        auto res = alu_.execute(uop.args.at("op"), a, b, c);
+        write_operand(uop.args.at("out"), res.value);
+
+        if (uop.args.count("update_flags") &&
+            uop.args.at("update_flags") == "true") {
+            if (flags_idx_ != -1)
+                regs_.write(flags_idx_, res.flags_register);
+        }
+    } else if (uop.action == "mem_read") {
+        uint64_t addr = resolve_operand(uop.args.at("addr"));
+        uint64_t val = mem_.read(static_cast<uint32_t>(addr));
+        write_operand(uop.args.at("out"), val);
+    } else if (uop.action == "mem_write") {
+        uint64_t addr = resolve_operand(uop.args.at("addr"));
+        uint64_t data = resolve_operand(uop.args.at("data"));
+        mem_.write(static_cast<uint32_t>(addr), data);
+    } else if (uop.action == "branch") {
+        bool cond = true;
+        if (uop.args.count("condition")) {
+            uint64_t f = (flags_idx_ != -1) ? regs_.read(flags_idx_) : 0;
+            std::string c_str = uop.args.at("condition");
+
+            if (c_str == "Z")
+                cond = (f >> 0) & 1;
+            else if (c_str == "NZ")
+                cond = !((f >> 0) & 1);
+            else if (c_str == "C")
+                cond = (f >> 1) & 1;
+            else if (c_str == "NC")
+                cond = !((f >> 1) & 1);
+            // ... Add other conditions here if needed
+        }
+
+        if (cond) {
+            uint64_t target = resolve_operand(uop.args.at("target"));
+            if (uop.args.count("relative") &&
+                uop.args.at("relative") == "true") {
+                regs_.set_pc(regs_.get_pc() + target);
+            } else {
+                regs_.set_pc(target);
+            }
+        }
+    } else if (uop.action == "halt") {
+        halted_ = true;
+    }
+}
+
+uint64_t Executor::resolve_operand(const std::string &arg) {
+    if (arg.empty())
+        return 0;
+
+    // Decoded bitfields
+    if (arg[0] == '@') {
+        std::string token = arg.substr(1);
+        if (current_inst_.regs.count(token))
+            return regs_.read(current_inst_.regs.at(token));
+        if (current_inst_.imms.count(token))
+            return current_inst_.imms.at(token);
+        return 0;
+    }
+
+    // Special Registers / Roles
+    if (arg[0] == '$') {
+        std::string reg = arg.substr(1);
+        if (reg == "PC")
+            return regs_.get_pc();
+        if (reg == "SP")
+            return regs_.read(sp_idx_);
+        if (reg == "FLAGS")
+            return regs_.read(flags_idx_);
+        if (reg == "NEXT_PC")
+            return regs_.get_pc() + units_fetched_;
+        return regs_.read(reg);
+    }
+
+    // Literals
+    if (arg[0] == '#') {
+        std::string val = arg.substr(1);
+        if (val == "WORD_SIZE")
+            return config_.data_width / 8 > 0 ? config_.data_width / 8 : 1;
+        return std::stoull(val, nullptr, 0);
+    }
+
+    return 0;
+}
+
+void Executor::write_operand(const std::string &arg, uint64_t value) {
+    if (arg.empty())
+        return;
+
+    if (arg[0] == '@') {
+        std::string token = arg.substr(1);
+        if (current_inst_.regs.count(token))
+            regs_.write(current_inst_.regs.at(token), value);
+    } else if (arg[0] == '$') {
+        std::string reg = arg.substr(1);
+        if (reg == "PC")
+            regs_.set_pc(value);
+        else if (reg == "SP")
+            regs_.write(sp_idx_, value);
+        else if (reg == "FLAGS")
+            regs_.write(flags_idx_, value);
+        else
+            regs_.write(reg, value);
+    }
+}

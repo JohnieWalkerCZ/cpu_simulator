@@ -6,27 +6,61 @@
   "registers": {
     "general_purpose": [
       { "name": "A", "width": 4, "initial": 0 },
-      { "name": "B", "width": 4, "initial": 0 }
+      { "name": "B", "width": 4, "initial": 4 }
     ],
     "special": [
-      { "name": "PC", "width": 4, "initial": 0, "role": "pc" }
+      { "name": "PC", "width": 4, "initial": 0, "role": "program_counter" },
+      { "name": "FLAGS", "width": 4, "initial": 0, "role": "status_flags" }
     ]
   },
   "alu": {
+    "flags": [
+      { "name": "Z", "bit": 0, "type": "zero" },
+      { "name": "C", "bit": 1, "type": "carry" }
+    ],
     "operations": [
-      { "name": "ADD", "code": 0, "format": "RR", "latency": 1 },
-      { "name": "SUB", "code": 1, "format": "RR", "latency": 1 },
-      { "name": "AND", "code": 2, "format": "RR", "latency": 1 },
-      { "name": "OR", "code": 3, "format": "RR", "latency": 1 }
+      { 
+        "name": "ADD_OP", 
+        "code": 0,
+        "expression": "a + b", 
+        "flag_rules": { "Z": "result_zero", "C": "carry_add" },
+        "latency": 1 
+      },
+      { 
+        "name": "SUB_OP", 
+        "code": 1,
+        "expression": "a - b", 
+        "flag_rules": { "Z": "result_zero", "C": "carry_sub" },
+        "latency": 1 
+      }
     ]
   },
   "instruction_set": {
     "instructions": [
-      { "name": "MOV", "opcode": 0, "format": "RR", "encoding": [0, "dest", "src"] },
-      { "name": "ADD", "opcode": 1, "format": "RR", "encoding": [1, "dest", "src"] },
-      { "name": "AND", "opcode": 2, "format": "RR", "encoding": [2, "dest", "src"] },
-      { "name": "OR", "opcode": 3, "format": "RR", "encoding": [3, "dest", "src"] },
-      { "name": "HLT", "opcode": 15, "format": "I", "encoding": [15] }
+      {
+        "name": "MOV",
+        "opcode": 0,
+        "encoding": [0, "dest", "src"],
+        "microcode": [
+          { "action": "copy", "source": "@src", "dest": "@dest" }
+        ]
+      },
+      {
+        "name": "ADD",
+        "opcode": 1,
+        "encoding": [1, "dest", "src"],
+        "microcode": [
+          { "action": "alu", "op": "ADD_OP", "a": "@dest", "b": "@src", "out": "@dest", "update_flags": "true" }
+        ]
+      },
+      {
+        "name": "HLT",
+        "opcode": 15,
+        "encoding": [15],
+        "microcode": [
+          { "action": "halt" }
+        ]
+      }    
     ]
   }
 }

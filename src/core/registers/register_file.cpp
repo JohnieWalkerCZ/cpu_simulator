@@ -1,6 +1,7 @@
 #include "register_file.hpp"
 #include <cstddef>
 #include <cstdint>
+#include <iostream>
 #include <stdexcept>
 #include <string>
 
@@ -13,11 +14,11 @@ RegisterFile::RegisterFile(const Config &config)
         name_to_index_[defs_[i].name] = i;
         registers_[i] = defs_[i].initial;
 
-        if (defs_[i].role == "pc") {
+        if (defs_[i].role == "program_counter") {
             pc_index_ = i;
-        } else if (defs_[i].role == "sp") {
+        } else if (defs_[i].role == "stack_pointer") {
             sp_index_ = i;
-        } else if (defs_[i].role == "flags") {
+        } else if (defs_[i].role == "status_flags") {
             flags_index_ = i;
         }
     }
