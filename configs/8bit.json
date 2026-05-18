@@ -7,7 +7,7 @@
     "general_purpose": [
       { "name": "R0", "width": 8, "initial": 0 },
       { "name": "R1", "width": 8, "initial": 0 },
-      { "name": "R2", "width": 8, "initial": 2 },
+      { "name": "R2", "width": 8, "initial": 0 },
       { "name": "R3", "width": 8, "initial": 0 }
     ],
     "special": [
@@ -142,6 +142,12 @@
           { "action": "mem_read", "addr": "$SP", "out": "$PC" },
           { "action": "alu", "op": "ADD", "a": "$SP", "b": "#2", "out": "$SP" }
         ]
+      },
+      {
+        "name": "JNZ",
+        "opcode": 13,
+        "encoding": [13, "address"],
+        "microcode": [ { "action": "branch", "condition": "!Z", "target": "@address" } ]
       },
       {
         "name": "HLT",

@@ -91,6 +91,12 @@ Config Config::from_json(const nlohmann::json &j) {
                             ins.encoding.push_back(-3);
                         else if (token == "offset")
                             ins.encoding.push_back(-4);
+                        else if (token == "imm8")
+                            ins.encoding.push_back(-5);
+                        else if (token == "imm16")
+                            ins.encoding.push_back(-6);
+                        else if (token == "address")
+                            ins.encoding.push_back(-7);
                         else
                             ins.encoding.push_back(-10);
                     }

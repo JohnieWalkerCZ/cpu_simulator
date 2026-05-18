@@ -43,6 +43,15 @@ void Decoder::build_layout_map() {
                 } else if (token == -4) {
                     field.token = "offset";
                     field.bits = 8;
+                } else if (token == -5) {
+                    field.token = "imm8";
+                    field.bits = 8;
+                } else if (token == -6) {
+                    field.token = "imm16";
+                    field.bits = 16;
+                } else if (token == -7) {
+                    field.token = "address";
+                    field.bits = config_.addr_width;
                 } else {
                     field.token = "imm";
                     field.bits = 8;

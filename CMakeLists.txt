@@ -66,6 +66,7 @@ target_include_directories(cpu_core PRIVATE src)
 target_link_libraries(cpu_core PRIVATE nlohmann_json)
 
 add_executable(cpu_sim
+    src/core/assembly/assembler.cpp
     src/main.cpp
 )
 target_link_libraries(cpu_sim cpu_core imgui SDL2::SDL2 ${OPENGL_LIBRARIES} dl)

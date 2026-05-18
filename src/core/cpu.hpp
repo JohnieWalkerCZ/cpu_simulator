@@ -4,6 +4,7 @@
 #include "execution/executor.hpp"
 #include "memory/memory.hpp"
 #include "registers/register_file.hpp"
+#include <cstdint>
 #include <vector>
 
 class CPU {
@@ -11,7 +12,7 @@ class CPU {
     explicit CPU(Config &cfg);
 
     void load_program(const std::vector<uint8_t> &code, uint32_t address = 0);
-    void step();     
+    void step();
     void step_uop();
     void run(int max_cycles = 10000);
     void reset();
@@ -24,6 +25,8 @@ class CPU {
     const Config &get_config() const { return cfg_; }
 
     bool is_halted() const { return executor_.is_halted(); }
+    const std::vector<uint8_t> &get_code() const { return code_; }
+    uint32_t get_load_address() const { return load_address_; }
 
   private:
     Config &cfg_;

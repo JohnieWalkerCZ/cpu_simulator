@@ -1,5 +1,7 @@
 #include "executor.hpp"
 #include <cstdint>
+#include <iostream>
+#include <ostream>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -149,24 +151,52 @@ void Executor::perform_uop(const MicroOp &uop) {
     } else if (uop.action == "branch") {
         bool cond = true;
         if (uop.args.count("condition")) {
-            uint64_t f = (flags_idx_ != -1) ? regs_.read(flags_idx_) : 0;
             std::string c_str = uop.args.at("condition");
+            uint64_t f_register =
+                (flags_idx_ != -1) ? regs_.read(flags_idx_) : 0;
 
-            if (c_str == "Z")
-                cond = (f >> 0) & 1;
-            else if (c_str == "NZ")
-                cond = !((f >> 0) & 1);
-            else if (c_str == "C")
-                cond = (f >> 1) & 1;
-            else if (c_str == "NC")
-                cond = !((f >> 1) & 1);
-            // ... Add other conditions here if needed
+            bool invert = false;
+            std::string search_type = c_str;
+            if (c_str[0] == '!') {
+                invert = true;
+                search_type = c_str.substr(1);
+            }
+
+            int bit_pos = -1;
+            for (const auto &f_def : config_.alu_flags) {
+                if (f_def.type == search_type) {
+                    bit_pos = f_def.bit;
+                    break;
+                }
+            }
+
+            if (bit_pos != -1) {
+                bool is_set = (f_register >> bit_pos) & 1;
+                cond = invert ? !is_set : is_set;
+            } else {
+                for (const auto &f_def : config_.alu_flags) {
+                    if (f_def.name == search_type) {
+                        bit_pos = f_def.bit;
+                        break;
+                    }
+                }
+                if (bit_pos != -1) {
+                    bool is_set = (f_register >> bit_pos) & 1;
+                    cond = invert ? !is_set : is_set;
+                } else {
+                    throw std::runtime_error(
+                        "Branch condition error: Flag type/name '" +
+                        search_type + "' not found in config.");
+                }
+            }
         }
 
         if (cond) {
             uint64_t target = resolve_operand(uop.args.at("target"));
             if (uop.args.count("relative") &&
                 uop.args.at("relative") == "true") {
+                // Perform sign extension for relative jumps if target is an
+                // immediate
                 regs_.set_pc(regs_.get_pc() + target);
             } else {
                 regs_.set_pc(target);

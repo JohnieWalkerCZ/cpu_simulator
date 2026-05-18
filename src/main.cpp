@@ -1,9 +1,13 @@
+#include "core/assembly/assembler.hpp"
 #include "core/cpu.hpp"
+#include "core/execution/decoder.hpp"
 #include "imgui.h"
 #include "imgui_impl_opengl3.h"
 #include "imgui_impl_sdl2.h"
 #include <SDL.h>
 #include <SDL_opengl.h>
+#include <iostream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -12,6 +16,10 @@ struct GUIState {
     float clock_speed = 2.0f; // Hz
     double last_step_time = 0;
     bool show_full_memory = false;
+
+    char asm_source[2048] = "HLT";
+    std::string asm_status = "";
+    bool asm_error = false;
 };
 
 // Helper to draw a circular "LED" for flags
@@ -203,7 +211,7 @@ void UI_MemoryView(CPU &cpu, GUIState &gui) {
             uint8_t val = (uint8_t)mem.read(addr);
 
             if (addr == pc)
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 1, 0, 1));
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0, 1, 0, 1));
             ImGui::Text("%02X", val);
             if (addr == pc)
                 ImGui::PopStyleColor();
@@ -273,14 +281,238 @@ void UI_ControlTower(CPU &cpu, GUIState &state) {
     ImGui::End();
 }
 
-int main(int argc, char **argv) {
-    // 1. Initialize CPU
-    Config cfg = Config::from_file("../configs/8bit.json");
-    CPU cpu(cfg);
+void UI_Assembler(CPU &cpu, GUIState &gui) {
+    ImGui::Begin("Live Assembler");
 
-    cpu.load_program({
-    0x5, 0b000'010'00,
-    0xF}, 0);
+    if (ImGui::BeginTable("AssemblerLayout", 2,
+                          ImGuiTableFlags_BordersInnerV |
+                              ImGuiTableFlags_Resizable)) {
+
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+
+        ImGui::TextDisabled("Write custom ISA assembly here:");
+        ImGui::InputTextMultiline(
+            "##source", gui.asm_source, sizeof(gui.asm_source),
+            ImVec2(-1.0f, ImGui::GetTextLineHeight() * 18),
+            ImGuiInputTextFlags_AllowTabInput);
+
+        if (ImGui::Button("Assemble & Load Program", ImVec2(-1.0f, 30))) {
+            try {
+                Assembler assembler(cpu.get_config());
+                auto machine_code =
+                    assembler.assemble(std::string(gui.asm_source), 0);
+                cpu.load_program(machine_code, 0);
+                cpu.reset(); // Reset PC and Pipeline
+
+                gui.asm_status = "Success! Compiled " +
+                                 std::to_string(machine_code.size()) +
+                                 " memory units.";
+                gui.asm_error = false;
+            } catch (const std::exception &e) {
+                gui.asm_status = std::string("Error: ") + e.what();
+                gui.asm_error = true;
+            }
+        }
+
+        if (!gui.asm_status.empty()) {
+            ImGui::Separator();
+            ImVec4 color = gui.asm_error ? ImVec4(1.0f, 0.4f, 0.4f, 1.0f)
+                                         : ImVec4(0.4f, 1.0f, 0.4f, 1.0f);
+            ImGui::TextColored(color, "%s", gui.asm_status.c_str());
+        }
+
+        ImGui::TableSetColumnIndex(1);
+        ImGui::Text("Architecture Reference Guide");
+        ImGui::Separator();
+
+        ImGui::BeginChild("InstGuideScroll", ImVec2(0, 0), false,
+                          ImGuiWindowFlags_HorizontalScrollbar);
+
+        if (ImGui::BeginTable("InstTable", 2,
+                              ImGuiTableFlags_Borders |
+                                  ImGuiTableFlags_RowBg)) {
+            ImGui::TableSetupColumn("Mnemonic",
+                                    ImGuiTableColumnFlags_WidthFixed, 60.0f);
+            ImGui::TableSetupColumn("Operands");
+            ImGui::TableHeadersRow();
+
+            for (const auto &inst : cpu.get_config().instructions) {
+                ImGui::TableNextRow();
+
+                ImGui::TableSetColumnIndex(0);
+                ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "%s",
+                                   inst.name.c_str());
+
+                ImGui::TableSetColumnIndex(1);
+
+                std::string operands = "";
+                bool first_op = true;
+
+                for (int enc : inst.encoding) {
+                    if (enc >= 0)
+                        continue;
+
+                    if (!first_op)
+                        operands += ", ";
+
+                    if (enc == -1)
+                        operands += "dest";
+                    else if (enc == -2)
+                        operands += "src";
+                    else if (enc == -3)
+                        operands += "addr_reg";
+                    else if (enc == -4)
+                        operands += "offset";
+                    else if (enc == -5)
+                        operands += "imm8";
+                    else if (enc == -6)
+                        operands += "imm16";
+                    else if (enc == -7)
+                        operands += "address";
+                    else
+                        operands += "?";
+
+                    first_op = false;
+                }
+
+                if (operands.empty()) {
+                    ImGui::TextDisabled("-");
+                } else {
+                    ImGui::Text("%s", operands.c_str());
+                }
+            }
+            ImGui::EndTable();
+        }
+        ImGui::EndChild();
+
+        ImGui::EndTable();
+    }
+    ImGui::End();
+}
+
+void UI_ProgramView(CPU &cpu) {
+    ImGui::Begin("Program Execution");
+
+    if (cpu.get_code().empty()) {
+        ImGui::TextDisabled("No program currently loaded.");
+        ImGui::End();
+        return;
+    }
+
+    auto &config = cpu.get_config();
+    auto &mem = cpu.get_memory();
+    auto &regs = cpu.get_registers();
+    Decoder decoder(config);
+
+    uint32_t pc = regs.get_pc();
+    uint32_t curr_addr = cpu.get_load_address();
+    uint32_t end_addr = curr_addr + cpu.get_code().size();
+    int unit_bits = config.data_width;
+
+    auto get_reg_name = [&](int idx) -> std::string {
+        if (idx >= 0 && idx < config.registers.size())
+            return config.registers[idx].name;
+        return "?";
+    };
+
+    while (curr_addr < end_addr) {
+        uint64_t first_unit = mem.read(curr_addr) & ((1ULL << unit_bits) - 1);
+        uint8_t opcode = decoder.peek_opcode(first_unit);
+        int total_bits = decoder.get_total_bits(opcode);
+        int units = (total_bits + unit_bits - 1) / unit_bits;
+
+        if (units <= 0)
+            units = 1;
+
+        uint64_t raw = first_unit;
+        for (int i = 1; i < units && (curr_addr + i) < mem.size(); ++i) {
+            uint64_t next_unit =
+                mem.read(curr_addr + i) & ((1ULL << unit_bits) - 1);
+            raw = (raw << unit_bits) | next_unit;
+        }
+
+        DecodedInstruction dec = decoder.decode(raw, units * unit_bits);
+        std::string asm_line;
+
+        if (!dec.is_valid) {
+            asm_line = "??? (Data)";
+            units = 1;
+        } else {
+            asm_line = dec.name;
+
+            const Instruction *inst_def = nullptr;
+            for (const auto &ins : config.instructions) {
+                if (ins.opcode == dec.opcode) {
+                    inst_def = &ins;
+                    break;
+                }
+            }
+
+            if (inst_def) {
+                bool first_op = true;
+                for (int enc : inst_def->encoding) {
+                    if (enc >= 0)
+                        continue;
+
+                    if (first_op) {
+                        asm_line += " ";
+                        first_op = false;
+                    } else {
+                        asm_line += ", ";
+                    }
+
+                    char buf[32];
+                    if (enc == -1 && dec.regs.count("dest"))
+                        asm_line += get_reg_name(dec.regs.at("dest"));
+                    else if (enc == -2 && dec.regs.count("src"))
+                        asm_line += get_reg_name(dec.regs.at("src"));
+                    else if (enc == -3 && dec.regs.count("addr_reg"))
+                        asm_line += get_reg_name(dec.regs.at("addr_reg"));
+                    else if (enc == -4 && dec.imms.count("offset"))
+                        asm_line +=
+                            std::to_string((int8_t)dec.imms.at("offset"));
+                    else if (enc == -5 && dec.imms.count("imm8"))
+                        asm_line += std::to_string(dec.imms.at("imm8"));
+                    else if (enc == -6 && dec.imms.count("imm16"))
+                        asm_line += std::to_string(dec.imms.at("imm16"));
+                    else if (enc == -7 && dec.imms.count("address")) {
+                        snprintf(buf, sizeof(buf), "0x%X",
+                                 (uint32_t)dec.imms.at("address"));
+                        asm_line += buf;
+                    }
+                }
+            }
+        }
+
+        bool is_current_pc = (curr_addr == pc);
+
+        if (is_current_pc) {
+            ImGui::PushStyleColor(ImGuiCol_Text,
+                                  ImVec4(0.2f, 1.0f, 0.2f, 1.0f));
+            ImGui::Text("-> %04X: %s", curr_addr, asm_line.c_str());
+            ImGui::PopStyleColor();
+
+            if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY())
+                ImGui::SetScrollHereY(0.5f);
+        } else {
+            ImGui::Text("   %04X: %s", curr_addr, asm_line.c_str());
+        }
+
+        curr_addr += units;
+    }
+
+    ImGui::End();
+}
+
+int main(int argc, char **argv) {
+    if (argc < 2) {
+        std::cout << "Usage: cpu_sim <config.json>\n";
+        return 1;
+    }
+    // 1. Initialize CPU
+    Config cfg = Config::from_file(argv[1]);
+    CPU cpu(cfg);
 
     // 2. Setup Graphics Boilerplate
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0)
@@ -337,6 +569,8 @@ int main(int argc, char **argv) {
         UI_ALUMonitor(cpu);
         UI_MemoryView(cpu, gui);
         UI_MicrocodePipeline(cpu);
+        UI_Assembler(cpu, gui);
+        UI_ProgramView(cpu);
 
         // Rendering
         ImGui::Render();
