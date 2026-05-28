@@ -14,7 +14,7 @@ class ALU {
 
     ALU(const Config &config);
     FullResult execute(const std::string &op_name, uint64_t a, uint64_t b = 0,
-                       uint64_t c = 0);
+                       uint64_t c = 0, int width = 0);
 
   private:
     const Config &config_;

@@ -95,6 +95,12 @@
         "microcode": [ { "action": "alu", "op": "SUB", "a": "@dest", "b": "@src", "out": "@dest", "update_flags": "true" } ]
       },
       {
+        "name": "SUB",
+        "opcode": 14,
+        "encoding": [14, "dest", "imm8"],
+        "microcode": [ { "action": "alu", "op": "SUB", "a": "@dest", "b": "@imm8", "out": "@dest", "update_flags": "true" } ]
+      },
+      {
         "name": "JMP",
         "opcode": 7,
         "encoding": [7, "address"],
@@ -156,5 +162,25 @@
         "microcode": [ { "action": "halt" } ]
       }
     ]
-  }
+  },
+  "peripherals": [
+    {
+      "name": "SerialTerminal",
+      "type": "text_display",
+      "address_start": "0x00AA",
+      "address_end": "0x00AF"
+    },
+    {
+      "name": "LEDDisplay",
+      "type": "grid_display",
+      "address_start": "0x00B0",
+      "address_end": "0x00C2"
+    },
+    {
+      "name": "Input",
+      "type": "input",
+      "address_start": "0x00D0",
+      "address_end": "0x00DF"
+    }
+  ]
 }

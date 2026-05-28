@@ -132,7 +132,8 @@ void Executor::perform_uop(const MicroOp &uop) {
         uint64_t c =
             uop.args.count("c") ? resolve_operand(uop.args.at("c")) : 0;
 
-        auto res = alu_.execute(uop.args.at("op"), a, b, c);
+        int op_width = get_operand_width(uop.args.at("out"));
+        auto res = alu_.execute(uop.args.at("op"), a, b, c, op_width);
         write_operand(uop.args.at("out"), res.value);
 
         if (uop.args.count("update_flags") &&
@@ -265,4 +266,42 @@ void Executor::write_operand(const std::string &arg, uint64_t value) {
         else
             regs_.write(reg, value);
     }
+}
+
+int Executor::get_operand_width(const std::string &arg) {
+    if (arg.empty())
+        return config_.data_width;
+
+    if (arg[0] == '@') {
+        std::string token = arg.substr(1);
+        if (current_inst_.regs.count(token)) {
+            int reg_idx = current_inst_.regs.at(token);
+            if (reg_idx >= 0 &&
+                reg_idx < static_cast<int>(regs_.get_defs().size())) {
+                return regs_.get_defs()[reg_idx].width;
+            }
+        }
+    } else if (arg[0] == '$') {
+        std::string reg = arg.substr(1);
+        if (reg == "PC") {
+            if (pc_idx_ != -1)
+                return regs_.get_defs()[pc_idx_].width;
+        } else if (reg == "SP") {
+            if (sp_idx_ != -1)
+                return regs_.get_defs()[sp_idx_].width;
+        } else if (reg == "FLAGS") {
+            if (flags_idx_ != -1)
+                return regs_.get_defs()[flags_idx_].width;
+        } else if (reg == "NEXT_PC") {
+            if (pc_idx_ != -1)
+                return regs_.get_defs()[pc_idx_].width;
+        } else {
+            for (const auto &def : regs_.get_defs()) {
+                if (def.name == reg) {
+                    return def.width;
+                }
+            }
+        }
+    }
+    return config_.data_width;
 }

@@ -6,9 +6,11 @@
 #include "imgui_impl_sdl2.h"
 #include <SDL.h>
 #include <SDL_opengl.h>
+#include <cstdint>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 struct GUIState {
@@ -17,12 +19,71 @@ struct GUIState {
     double last_step_time = 0;
     bool show_full_memory = false;
 
-    char asm_source[2048] = "HLT";
+    char asm_source[8 * 1000] = "HLT";
     std::string asm_status = "";
     bool asm_error = false;
 };
 
-// Helper to draw a circular "LED" for flags
+struct PeripheralsState {
+    std::unordered_map<std::string, std::string> console_buffers;
+    std::unordered_map<std::string, std::vector<bool>> led_matrices;
+    std::unordered_map<std::string, uint64_t> key_states;
+};
+
+void InitializePeripherals(CPU &cpu, PeripheralsState &p_state) {
+    cpu.get_memory().reset_io_hooks();
+
+    for (const auto &def : cpu.get_config().peripherals) {
+        if (def.type == "text_display") {
+            p_state.console_buffers[def.name] = "";
+
+            cpu.get_memory().map_io_region(
+                def.address_start, def.address_end, nullptr,
+                [&p_state, name = def.name](uint32_t address, uint64_t val) {
+                    if (val == '\n' || val == '\r')
+                        p_state.console_buffers[name] += '\n';
+                    else if (val >= 32 && val <= 126)
+                        p_state.console_buffers[name] += (char)val;
+                });
+        } else if (def.type == "grid_display") {
+            size_t size = (def.address_end - def.address_start) + 1;
+            p_state.led_matrices[def.name].resize(size, false);
+
+            cpu.get_memory().map_io_region(
+                def.address_start, def.address_end, nullptr,
+                [&p_state, name = def.name,
+                 start = def.address_start](uint32_t addr, uint64_t val) {
+                    uint32_t offset = addr - start;
+                    p_state.led_matrices[name][offset] = (val != 0);
+                });
+        } else if (def.type == "input") {
+            p_state.key_states[def.name] = 0;
+
+            cpu.get_memory().map_io_region(
+                def.address_start, def.address_end,
+                [&p_state, name = def.name](uint32_t addr) -> uint64_t {
+                    uint64_t val = p_state.key_states[name];
+                    p_state.key_states[name] = 0;
+                    return val;
+                },
+                nullptr);
+        }
+    }
+}
+
+void ResetPeripheralsState(const Config &config, PeripheralsState &p_state) {
+    for (const auto &def : config.peripherals) {
+        if (def.type == "text_display") {
+            p_state.console_buffers[def.name].clear();
+        } else if (def.type == "grid_display") {
+            std::fill(p_state.led_matrices[def.name].begin(),
+                      p_state.led_matrices[def.name].end(), false);
+        } else if (def.type == "input") {
+            p_state.key_states[def.name] = 0;
+        }
+    }
+}
+
 void DrawFlagLED(const char *label, bool active) {
     ImGui::BeginGroup();
     ImDrawList *draw_list = ImGui::GetWindowDrawList();
@@ -208,7 +269,7 @@ void UI_MemoryView(CPU &cpu, GUIState &gui) {
 
         for (uint32_t j = 0; j < 8 && (i + j) < display_limit; j++) {
             uint32_t addr = i + j;
-            uint8_t val = (uint8_t)mem.read(addr);
+            uint8_t val = mem.raw()[addr];
 
             if (addr == pc)
                 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0, 1, 0, 1));
@@ -230,7 +291,7 @@ void UI_MemoryView(CPU &cpu, GUIState &gui) {
     ImGui::End();
 }
 
-void UI_ControlTower(CPU &cpu, GUIState &state) {
+void UI_ControlTower(CPU &cpu, GUIState &state, PeripheralsState &p_state) {
     ImGui::Begin("Control Tower");
 
     if (state.is_running) {
@@ -250,8 +311,10 @@ void UI_ControlTower(CPU &cpu, GUIState &state) {
         cpu.step_uop();
 
     ImGui::SameLine();
-    if (ImGui::Button("RESET"))
+    if (ImGui::Button("RESET")) {
         cpu.reset();
+        ResetPeripheralsState(cpu.get_config(), p_state);
+    }
 
     ImGui::Separator();
     ImGui::SliderFloat("Speed", &state.clock_speed, 0.5f, 100.0f, "%.1f Hz");
@@ -281,7 +344,7 @@ void UI_ControlTower(CPU &cpu, GUIState &state) {
     ImGui::End();
 }
 
-void UI_Assembler(CPU &cpu, GUIState &gui) {
+void UI_Assembler(CPU &cpu, GUIState &gui, PeripheralsState &p_state) {
     ImGui::Begin("Live Assembler");
 
     if (ImGui::BeginTable("AssemblerLayout", 2,
@@ -294,7 +357,7 @@ void UI_Assembler(CPU &cpu, GUIState &gui) {
         ImGui::TextDisabled("Write custom ISA assembly here:");
         ImGui::InputTextMultiline(
             "##source", gui.asm_source, sizeof(gui.asm_source),
-            ImVec2(-1.0f, ImGui::GetTextLineHeight() * 18),
+            ImVec2(-1.0f, ImGui::GetTextLineHeight() * 40),
             ImGuiInputTextFlags_AllowTabInput);
 
         if (ImGui::Button("Assemble & Load Program", ImVec2(-1.0f, 30))) {
@@ -303,7 +366,8 @@ void UI_Assembler(CPU &cpu, GUIState &gui) {
                 auto machine_code =
                     assembler.assemble(std::string(gui.asm_source), 0);
                 cpu.load_program(machine_code, 0);
-                cpu.reset(); // Reset PC and Pipeline
+                cpu.reset();
+                ResetPeripheralsState(cpu.get_config(), p_state);
 
                 gui.asm_status = "Success! Compiled " +
                                  std::to_string(machine_code.size()) +
@@ -505,6 +569,77 @@ void UI_ProgramView(CPU &cpu) {
     ImGui::End();
 }
 
+void UI_Peripherals(const Config &config, PeripheralsState &p_state) {
+    if (config.peripherals.empty())
+        return;
+
+    ImGui::Begin("I/O Peripherals");
+
+    for (const auto &def : config.peripherals) {
+        if (ImGui::CollapsingHeader(def.name.c_str(),
+                                    ImGuiTreeNodeFlags_DefaultOpen)) {
+
+            if (def.type == "text_display") {
+                ImGui::TextDisabled("Mapped to 0x%04X", def.address_start);
+                ImGui::BeginChild((def.name + "_scroll").c_str(),
+                                  ImVec2(0, 100), true);
+                ImGui::TextUnformatted(
+                    p_state.console_buffers[def.name].c_str());
+                if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY())
+                    ImGui::SetScrollHereY(1.0f);
+                ImGui::EndChild();
+            }
+
+            else if (def.type == "grid_display") {
+                ImGui::TextDisabled("Mapped to 0x%04X - 0x%04X",
+                                    def.address_start, def.address_end);
+                int width = def.parameters.count("width")
+                                ? std::stoi(def.parameters.at("width"))
+                                : 8;
+
+                ImDrawList *draw_list = ImGui::GetWindowDrawList();
+                ImVec2 cursor = ImGui::GetCursorScreenPos();
+                float cell_size = 20.0f;
+
+                for (size_t i = 0; i < p_state.led_matrices[def.name].size();
+                     ++i) {
+                    float x = cursor.x + (i % width) * cell_size;
+                    float y = cursor.y + (i / width) * cell_size;
+
+                    bool on = p_state.led_matrices[def.name][i];
+                    ImU32 color = on ? IM_COL32(50, 255, 50, 255)
+                                     : IM_COL32(30, 30, 30, 255);
+
+                    draw_list->AddRectFilled(
+                        ImVec2(x, y),
+                        ImVec2(x + cell_size - 2, y + cell_size - 2), color);
+                }
+                ImGui::Dummy(
+                    ImVec2(width * cell_size,
+                           (p_state.led_matrices[def.name].size() / width) *
+                               cell_size));
+            }
+
+            else if (def.type == "input") {
+                ImGui::TextDisabled("Mapped to 0x%04X", def.address_start);
+                ImGui::Text("Press a key to send to CPU:");
+                if (ImGui::Button(" A "))
+                    p_state.key_states[def.name] = 'A';
+                ImGui::SameLine();
+                if (ImGui::Button(" B "))
+                    p_state.key_states[def.name] = 'B';
+                ImGui::SameLine();
+                if (ImGui::Button(" ENT "))
+                    p_state.key_states[def.name] = '\n';
+                ImGui::TextColored(ImVec4(1, 1, 0, 1), "Buffer: %c",
+                                   (char)p_state.key_states[def.name]);
+            }
+            ImGui::Separator();
+        }
+    }
+    ImGui::End();
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         std::cout << "Usage: cpu_sim <config.json>\n";
@@ -513,6 +648,8 @@ int main(int argc, char **argv) {
     // 1. Initialize CPU
     Config cfg = Config::from_file(argv[1]);
     CPU cpu(cfg);
+    PeripheralsState p_state;
+    InitializePeripherals(cpu, p_state);
 
     // 2. Setup Graphics Boilerplate
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0)
@@ -564,13 +701,14 @@ int main(int argc, char **argv) {
         ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport());
 
         // Draw the 5 design-spec windows
-        UI_ControlTower(cpu, gui);
+        UI_ControlTower(cpu, gui, p_state);
         UI_RegisterFile(cpu);
         UI_ALUMonitor(cpu);
         UI_MemoryView(cpu, gui);
         UI_MicrocodePipeline(cpu);
-        UI_Assembler(cpu, gui);
+        UI_Assembler(cpu, gui, p_state);
         UI_ProgramView(cpu);
+        UI_Peripherals(cfg, p_state);
 
         // Rendering
         ImGui::Render();

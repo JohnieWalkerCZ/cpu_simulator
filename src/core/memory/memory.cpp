@@ -1,7 +1,7 @@
-
 #include "memory.hpp"
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -13,7 +13,8 @@ Memory::Memory(size_t size, int word_size_bits)
                                  std::to_string(word_size_bits) + " bits");
     }
 
-    if (word_size_bytes_ == 0) word_size_bytes_ = 1;
+    if (word_size_bytes_ == 0)
+        word_size_bytes_ = 1;
 
     if (word_size_bytes_ == 8) {
         mask_ = UINT64_MAX;
@@ -26,6 +27,10 @@ uint64_t Memory::read(uint32_t address) const {
     if (!is_valid_address(address)) {
         throw std::runtime_error("Memory read out of bounds: " +
                                  std::to_string(address));
+    }
+
+    if (auto reg = find_io_region(address)) {
+        return reg->read_cb ? reg->read_cb(address) : 0;
     }
 
     uint64_t result = 0;
@@ -41,6 +46,12 @@ void Memory::write(uint32_t address, uint64_t value) {
         throw std::runtime_error("Memory read out of bounds: " +
                                  std::to_string(address));
     }
+
+    if (auto reg = find_io_region(address)) {
+        if (reg->write_cb)
+            reg->write_cb(address, value);
+    }
+
     value &= mask_;
     for (int i = 0; i < word_size_bytes_; ++i) {
         memory_[address + i] = static_cast<uint8_t>((value >> (i * 8) & 0xFF));
@@ -79,3 +90,20 @@ bool Memory::is_valid_address(uint32_t address) const {
 }
 
 void Memory::reset() { std::fill(memory_.begin(), memory_.end(), 0); }
+
+void Memory::map_io_region(uint32_t start, uint32_t end, MMIO_ReadCallback r_cb,
+                           MMIO_WriteCallback w_cb) {
+    io_regions_.push_back({start, end, r_cb, w_cb});
+}
+
+void Memory::reset_io_hooks() { io_regions_.clear(); }
+
+const MMIORegion *Memory::find_io_region(uint32_t address) const {
+    for (const MMIORegion &r : io_regions_) {
+        if (address >= r.start && address <= r.end) {
+            return &r;
+        }
+    }
+
+    return nullptr;
+}

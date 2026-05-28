@@ -40,6 +40,14 @@ struct FlagDef {
     std::string type; // "zero", "carry", "overflow", "negative", etc.
 };
 
+struct PeripheralDef {
+    std::string name;
+    std::string type;
+    uint32_t address_start;
+    uint32_t address_end;
+    std::unordered_map<std::string, std::string> parameters;
+};
+
 struct Config {
     std::string name;
     int data_width;
@@ -50,6 +58,7 @@ struct Config {
     std::vector<FlagDef> alu_flags;
     std::vector<ALUOp> alu_ops;
     std::vector<Instruction> instructions;
+    std::vector<PeripheralDef> peripherals;
 
     bool validate() const;
     std::string get_error() const;

@@ -3,6 +3,9 @@
 #include "../execution/decoder.hpp"
 #include <cstdint>
 #include <unordered_map>
+#include <vector>
+
+enum class OperandType { Register, Immediate };
 
 class Assembler {
   public:
@@ -20,4 +23,6 @@ class Assembler {
     uint64_t
     parse_operand(const std::string &op,
                   const std::unordered_map<std::string, uint32_t> &labels);
+    OperandType determine_operand_type(const std::string &token);
+    std::vector<OperandType> get_expected_signature(const Instruction &inst);
 };

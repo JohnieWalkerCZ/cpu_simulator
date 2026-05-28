@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <fstream>
 #include <stdexcept>
+#include <string>
 #include <unordered_set>
 
 Config Config::from_json(const nlohmann::json &j) {
@@ -130,6 +131,34 @@ Config Config::from_json(const nlohmann::json &j) {
         }
     }
 
+    if (j.contains("peripherals")) {
+        for (const auto &p : j["peripherals"]) {
+            PeripheralDef def;
+            def.name = p.at("name").get<std::string>();
+            def.type = p.at("type").get<std::string>();
+
+            if (p.contains("address")) {
+                def.address_start =
+                    std::stoul(p.at("address").get<std::string>(), nullptr, 0);
+                def.address_end = def.address_start;
+            } else {
+                def.address_start = std::stoul(
+                    p.at("address_start").get<std::string>(), nullptr, 0);
+                def.address_end = std::stoul(
+                    p.at("address_end").get<std::string>(), nullptr, 0);
+            }
+
+            if (p.contains("parameters")) {
+                for (auto &[key, val] : p["parameters"].items()) {
+                    def.parameters[key] = val.is_string()
+                                              ? val.get<std::string>()
+                                              : std::to_string(val.get<int>());
+                }
+            }
+            cfg.peripherals.push_back(def);
+        }
+    }
+
     return cfg;
 }
 
@@ -178,14 +207,16 @@ bool Config::validate() const {
 
         if (!reg.role.empty()) {
             if (reg.role != "pc" && reg.role != "sp" && reg.role != "flags" &&
-                reg.role != "ir" && reg.role != "accumulator")
+                reg.role != "ir" && reg.role != "accumulator" &&
+                reg.role != "program_counter" && reg.role != "stack_pointer" &&
+                reg.role != "status_flags")
                 return false;
         }
     }
 
     bool has_pc = false;
     for (const RegisterDef &reg : registers) {
-        if (reg.role == "pc") {
+        if (reg.role == "pc" || reg.role == "program_counter") {
             has_pc = true;
             break;
         }

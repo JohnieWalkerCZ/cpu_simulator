@@ -45,4 +45,5 @@ class Executor {
     void perform_uop(const MicroOp &uop);
     uint64_t resolve_operand(const std::string &arg);
     void write_operand(const std::string &arg, uint64_t value);
+    int get_operand_width(const std::string &arg);
 };

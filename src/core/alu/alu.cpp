@@ -166,11 +166,11 @@ uint64_t ALU::evaluate_rpn(const std::vector<Token> &rpn, uint64_t a,
             }
         }
     }
-    return s.top() & mask_;
+    return s.top();
 }
 
 ALU::FullResult ALU::execute(const std::string &op_name, uint64_t a, uint64_t b,
-                             uint64_t c) {
+                             uint64_t c, int width) {
     const auto &rpn = compiled_ops_.at(op_name);
 
     const ALUOp *op_def = nullptr;
@@ -181,8 +181,15 @@ ALU::FullResult ALU::execute(const std::string &op_name, uint64_t a, uint64_t b,
         }
     }
 
+    uint64_t op_mask = mask_;
+    uint64_t op_sign_bit = sign_bit_;
+    if (width > 0) {
+        op_mask = (width == 64) ? ~0ULL : (1ULL << width) - 1;
+        op_sign_bit = 1ULL << (width - 1);
+    }
+
     uint64_t res = evaluate_rpn(rpn, a, b, c);
-    uint64_t final_res = res & mask_;
+    uint64_t final_res = res & op_mask;
 
     uint64_t flags_out = 0;
 
@@ -203,20 +210,22 @@ ALU::FullResult ALU::execute(const std::string &op_name, uint64_t a, uint64_t b,
         if (logic_type == "result_zero") {
             flag_val = (final_res == 0);
         } else if (logic_type == "result_negative") {
-            flag_val = (final_res & sign_bit_) != 0;
+            flag_val = (final_res & op_sign_bit) != 0;
         } else if (logic_type == "carry_add") {
-            flag_val = (a > mask_ - b);
+            flag_val = (a > op_mask - b);
         } else if (logic_type == "carry_sub") {
             flag_val = (a < b);
         } else if (logic_type == "overflow_add") {
             // Logic: (a,b same sign) AND (res different sign)
-            flag_val = !((a ^ b) & sign_bit_) && ((a ^ final_res) & sign_bit_);
+            flag_val =
+                !((a ^ b) & op_sign_bit) && ((a ^ final_res) & op_sign_bit);
         } else if (logic_type == "overflow_sub") {
             // Logic: (a,b different sign) AND (res different sign than a)
-            flag_val = ((a ^ b) & sign_bit_) && ((a ^ final_res) & sign_bit_);
+            flag_val =
+                ((a ^ b) & op_sign_bit) && ((a ^ final_res) & op_sign_bit);
         } else if (logic_type == "parity") {
             int count = 0;
-            uint64_t temp = final_res & 0xFF;
+            uint64_t temp = final_res;
             while (temp) {
                 count += (temp & 1);
                 temp >>= 1;
