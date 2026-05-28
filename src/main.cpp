@@ -18,6 +18,7 @@ struct GUIState {
     float clock_speed = 2.0f; // Hz
     double last_step_time = 0;
     bool show_full_memory = false;
+    bool run_by_uop = false;
 
     char asm_source[8 * 1000] = "HLT";
     std::string asm_status = "";
@@ -212,6 +213,15 @@ void UI_MicrocodePipeline(CPU &cpu) {
 
                 if (is_current) {
                     ImGui::SameLine();
+
+                    int latency = executor.get_current_uop_latency();
+                    if (latency > 1) {
+                        ImGui::TextColored(
+                            ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "(Cycle %d/%d)",
+                            executor.get_current_uop_cycles() + 1, latency);
+                        ImGui::SameLine();
+                    }
+
                     ImGui::Text(" <--");
                     ImGui::PopStyleColor();
                 }
@@ -317,7 +327,19 @@ void UI_ControlTower(CPU &cpu, GUIState &state, PeripheralsState &p_state) {
     }
 
     ImGui::Separator();
-    ImGui::SliderFloat("Speed", &state.clock_speed, 0.5f, 100.0f, "%.1f Hz");
+    ImGui::Text("Execution mode:");
+    if (ImGui::RadioButton("Instruction-by-Instruction", !state.run_by_uop)) {
+        state.run_by_uop = false;
+    }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Micro-op (Cycle-by-Cycle)", state.run_by_uop)) {
+        state.run_by_uop = true;
+    }
+
+    ImGui::Separator();
+    const char *speed_unit = state.run_by_uop ? "%.1f Hz (Clock Cycles)"
+                                              : "%.1f IPS (Instructions/s)";
+    ImGui::SliderFloat("Speed", &state.clock_speed, 0.5f, 100.0f, speed_unit);
 
     ImGui::Separator();
     ImGui::Text("Total Cycles: %d", cpu.get_executor().get_total_cycles());
@@ -687,8 +709,14 @@ int main(int argc, char **argv) {
         // Automatic Clock Timing
         if (gui.is_running && !cpu.is_halted()) {
             double current_time = SDL_GetTicks() / 1000.0;
-            if (current_time - gui.last_step_time >= (1.0 / gui.clock_speed)) {
-                cpu.step(); // Steps a full instruction
+            double interval = 1.0 / gui.clock_speed;
+            if (current_time - gui.last_step_time >= interval) {
+                if (gui.run_by_uop) {
+                    cpu.step_uop();
+                } else {
+                    cpu.step();
+                }
+
                 gui.last_step_time = current_time;
             }
         }
