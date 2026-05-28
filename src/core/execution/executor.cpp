@@ -36,6 +36,7 @@ void Executor::reset() {
     units_fetched_ = 0;
     halted_ = false;
     cycles_ = 0;
+    current_uop_cycles_ = 0;
     current_inst_ = DecodedInstruction();
 }
 
@@ -50,6 +51,8 @@ void Executor::step_instruction() {
 void Executor::step_uop() {
     if (halted_)
         return;
+
+    cycles_++;
 
     switch (state_) {
     case ExecutionState::FETCH: {
@@ -93,6 +96,7 @@ void Executor::step_uop() {
                                      current_inst_.error);
 
         uop_index_ = 0;
+        current_uop_cycles_ = 0;
         state_ = ExecutionState::EXECUTE_UOPS;
         break;
     }
@@ -100,8 +104,27 @@ void Executor::step_uop() {
     case ExecutionState::EXECUTE_UOPS: {
         const auto &uops = microcode_map.at(current_inst_.opcode);
         if (uop_index_ < uops.size()) {
-            perform_uop(uops[uop_index_]);
-            uop_index_++;
+            const auto &uop = uops[uop_index_];
+            int latency = 1;
+            if (uop.action == "alu") {
+                std::string op_name = uop.args.at("op");
+                for (const auto &op : config_.alu_ops) {
+                    if (op.name == op_name) {
+                        latency = op.latency;
+                        break;
+                    }
+                }
+            }
+
+            current_uop_cycles_++;
+
+            if (current_uop_cycles_ >= latency) {
+                perform_uop(uop);
+                uop_index_++;
+                current_uop_cycles_ = 0;
+            } else {
+                // Stalling...
+            }
         }
         if (uop_index_ >= uops.size()) {
             state_ = ExecutionState::DONE;
@@ -114,7 +137,6 @@ void Executor::step_uop() {
             regs_.increment_pc(units_fetched_);
         }
 
-        cycles_++;
         state_ = ExecutionState::FETCH;
         break;
     }
@@ -304,4 +326,25 @@ int Executor::get_operand_width(const std::string &arg) {
         }
     }
     return config_.data_width;
+}
+
+int Executor::get_current_uop_latency() const {
+    if (state_ != ExecutionState::EXECUTE_UOPS) {
+        return 1;
+    }
+
+    const auto &uops = microcode_map.at(current_inst_.opcode);
+
+    if (uop_index_ < uops.size()) {
+        const auto &uop = uops[uop_index_];
+        if (uop.action == "alu") {
+            std::string op_name = uop.args.at("op");
+            for (const auto &op : config_.alu_ops) {
+                if (op.name == op_name)
+                    return op.latency;
+            }
+        }
+    }
+
+    return 1;
 }

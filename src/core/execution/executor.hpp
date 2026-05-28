@@ -20,6 +20,8 @@ class Executor {
     size_t get_current_uop_index() const { return uop_index_; }
     bool is_halted() const { return halted_; }
     int get_total_cycles() const { return cycles_; }
+    int get_current_uop_cycles() const { return current_uop_cycles_; }
+    int get_current_uop_latency() const;
 
   private:
     Config &config_;
@@ -41,6 +43,7 @@ class Executor {
     int flags_idx_;
     uint64_t raw_inst_bits_ = 0;
     int total_bits_to_decode_ = 0;
+    int current_uop_cycles_ = 0;
 
     void perform_uop(const MicroOp &uop);
     uint64_t resolve_operand(const std::string &arg);

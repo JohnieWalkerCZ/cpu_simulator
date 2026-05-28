@@ -29,7 +29,7 @@
         "flag_rules": { "Z": "result_zero", "C": "carry_add", "V": "overflow_add", "N": "result_negative" } 
       },
       { 
-        "name": "SUB", "expression": "a - b", 
+        "name": "SUB", "expression": "a - b", "latency": 1, 
         "flag_rules": { "Z": "result_zero", "C": "carry_sub", "V": "overflow_sub", "N": "result_negative" } 
       },
       { 
