@@ -155,6 +155,42 @@ Config Config::from_json(const nlohmann::json &j) {
                                               : std::to_string(val.get<int>());
                 }
             }
+
+            if (p.contains("internal_state")) {
+                for (auto &[key, val] : p["internal_state"].items()) {
+                    def.internal_state[key] =
+                        val.is_number() ? val.get<uint64_t>() : 0;
+                }
+            }
+
+            if (p.contains("registers")) {
+                for (const auto &r : p["registers"]) {
+                    PeripheralRegisterDef rdef;
+                    rdef.name = r.at("name").get<std::string>();
+                    rdef.offset = r.at("offset").get<int>();
+                    rdef.size_bytes = r.value("size_bytes", 1);
+                    rdef.access = r.value("access", "rw");
+                    rdef.initial =
+                        r.contains("initial")
+                            ? (r["initial"].is_number()
+                                   ? r["initial"].get<uint64_t>()
+                                   : std::stoull(
+                                         r["initial"].get<std::string>(),
+                                         nullptr, 0))
+                            : 0;
+
+                    if (r.contains("on_read"))
+                        rdef.on_read = r["on_read"];
+                    if (r.contains("on_write"))
+                        rdef.on_write = r["on_write"];
+                    def.registers.push_back(rdef);
+                }
+            }
+
+            if (p.contains("tick_behavior")) {
+                def.tick_behavior = p["tick_behavior"];
+            }
+
             cfg.peripherals.push_back(def);
         }
     }

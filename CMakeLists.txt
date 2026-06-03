@@ -61,6 +61,7 @@ add_library(cpu_core STATIC
     src/core/execution/decoder.cpp
     src/core/execution/executor.cpp
     src/core/assembly/assembler.cpp
+    src/core/peripherals/declarative_peripheral.cpp
 )
 target_include_directories(cpu_core PUBLIC src)
 

@@ -85,6 +85,13 @@ void RegisterFile::increment_pc(int amount) {
     registers_[pc_index_] = new_val;
 }
 
+void RegisterFile::set_sp(uint64_t value) {
+    if (sp_index_ == -1) {
+        throw std::runtime_error("No stack pointer register defined");
+    }
+    registers_[sp_index_] = mask_value(value, defs_[sp_index_].width);
+}
+
 std::vector<uint64_t> RegisterFile::get_all_values() const {
     return registers_;
 }

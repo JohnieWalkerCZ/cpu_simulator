@@ -19,6 +19,8 @@ class RegisterFile {
     void set_pc(uint64_t value);
     void increment_pc(int amount = 1);
 
+    void set_sp(uint64_t value);
+
     size_t size() const { return registers_.size(); }
     const std::vector<RegisterDef> &get_defs() const { return defs_; }
     std::vector<uint64_t> get_all_values() const;

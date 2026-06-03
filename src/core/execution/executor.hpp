@@ -11,7 +11,6 @@ class Executor {
   public:
     Executor(Config &config, RegisterFile &regs, Memory &mem, ALU &alu);
 
-    void step_instruction();
     void step_uop();
     void reset();
 
@@ -22,6 +21,10 @@ class Executor {
     int get_total_cycles() const { return cycles_; }
     int get_current_uop_cycles() const { return current_uop_cycles_; }
     int get_current_uop_latency() const;
+    void trigger_interrupt(int interrupt_id) {
+        interrupt_pending_ = true;
+        pending_interrupt_id_ = interrupt_id;
+    }
 
   private:
     Config &config_;
@@ -44,6 +47,8 @@ class Executor {
     uint64_t raw_inst_bits_ = 0;
     int total_bits_to_decode_ = 0;
     int current_uop_cycles_ = 0;
+    bool interrupt_pending_ = false;
+    int pending_interrupt_id_ = -1;
 
     void perform_uop(const MicroOp &uop);
     uint64_t resolve_operand(const std::string &arg);

@@ -5,7 +5,6 @@
 #include <stdexcept>
 #include <unordered_map>
 
-// Helper map to cache microcode for faster access
 static std::unordered_map<uint8_t, std::vector<MicroOp>> microcode_map;
 
 Executor::Executor(Config &config, RegisterFile &regs, Memory &mem, ALU &alu)
@@ -38,14 +37,6 @@ void Executor::reset() {
     cycles_ = 0;
     current_uop_cycles_ = 0;
     current_inst_ = DecodedInstruction();
-}
-
-void Executor::step_instruction() {
-    // Run UOPs until we hit the FETCH state again or the CPU halts
-    // This allows one button to do a "Full Step"
-    do {
-        step_uop();
-    } while (state_ != ExecutionState::FETCH && !halted_);
 }
 
 void Executor::step_uop() {
@@ -135,6 +126,16 @@ void Executor::step_uop() {
     case ExecutionState::DONE: {
         if (regs_.get_pc() == fetch_pc_) {
             regs_.increment_pc(units_fetched_);
+        }
+
+        if (interrupt_pending_) {
+            uint64_t current_sp = regs_.read(sp_idx_);
+            uint64_t new_sp =
+                current_sp -
+                (config_.data_width / 8 > 0 ? config_.data_width / 8 : 1);
+
+            regs_.set_sp(new_sp);
+            interrupt_pending_ = false;
         }
 
         state_ = ExecutionState::FETCH;

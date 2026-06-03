@@ -37,7 +37,6 @@ void InitializePeripherals(CPU &cpu, PeripheralsState &p_state) {
     for (const auto &def : cpu.get_config().peripherals) {
         if (def.type == "text_display") {
             p_state.console_buffers[def.name] = "";
-
             cpu.get_memory().map_io_region(
                 def.address_start, def.address_end, nullptr,
                 [&p_state, name = def.name](uint32_t address, uint64_t val) {
@@ -46,32 +45,36 @@ void InitializePeripherals(CPU &cpu, PeripheralsState &p_state) {
                     else if (val >= 32 && val <= 126)
                         p_state.console_buffers[name] += (char)val;
                 });
-        } else if (def.type == "grid_display") {
-            size_t size = (def.address_end - def.address_start) + 1;
-            p_state.led_matrices[def.name].resize(size, false);
+        }
+    }
 
-            cpu.get_memory().map_io_region(
-                def.address_start, def.address_end, nullptr,
-                [&p_state, name = def.name,
-                 start = def.address_start](uint32_t addr, uint64_t val) {
-                    uint32_t offset = addr - start;
-                    p_state.led_matrices[name][offset] = (val != 0);
+    auto &dec_peripherals = cpu.get_peripherals();
+    for (auto &dp : dec_peripherals) {
+        for (const auto &def : cpu.get_config().peripherals) {
+            if (def.type == "declarative" && def.name == dp.get_name()) {
+
+                dp.set_host_print_hook([&p_state, name = def.name](char c) {
+                    p_state.console_buffers[name] += c;
                 });
-        } else if (def.type == "input") {
-            p_state.key_states[def.name] = 0;
-
-            cpu.get_memory().map_io_region(
-                def.address_start, def.address_end,
-                [&p_state, name = def.name](uint32_t addr) -> uint64_t {
-                    uint64_t val = p_state.key_states[name];
+                dp.set_host_pop_hook([&p_state, name = def.name]() -> char {
+                    char c = p_state.key_states[name];
                     p_state.key_states[name] = 0;
-                    return val;
-                },
-                nullptr);
+                    return c;
+                });
+
+                cpu.get_memory().map_io_region(
+                    def.address_start, def.address_end,
+                    [&dp, start = def.address_start](uint32_t addr) {
+                        return dp.read(addr - start);
+                    },
+                    [&dp, start = def.address_start](uint32_t addr,
+                                                     uint64_t val) {
+                        dp.write(addr - start, val);
+                    });
+            }
         }
     }
 }
-
 void ResetPeripheralsState(const Config &config, PeripheralsState &p_state) {
     for (const auto &def : config.peripherals) {
         if (def.type == "text_display") {
@@ -591,7 +594,7 @@ void UI_ProgramView(CPU &cpu) {
     ImGui::End();
 }
 
-void UI_Peripherals(const Config &config, PeripheralsState &p_state) {
+void UI_Peripherals(CPU &cpu, const Config &config, PeripheralsState &p_state) {
     if (config.peripherals.empty())
         return;
 
@@ -655,6 +658,74 @@ void UI_Peripherals(const Config &config, PeripheralsState &p_state) {
                     p_state.key_states[def.name] = '\n';
                 ImGui::TextColored(ImVec4(1, 1, 0, 1), "Buffer: %c",
                                    (char)p_state.key_states[def.name]);
+            }
+
+            else if (def.type == "declarative") {
+                ImGui::TextDisabled("Mapped to 0x%04X - 0x%04X",
+                                    def.address_start, def.address_end);
+
+                DeclarativePeripheral *active_dp = nullptr;
+                for (auto &dp : cpu.get_peripherals()) {
+                    if (dp.get_name() == def.name) {
+                        active_dp = &dp;
+                        break;
+                    }
+                }
+
+                if (active_dp) {
+                    if (!def.registers.empty()) {
+                        ImGui::Text("Memory-Mapped Registers:");
+                        if (ImGui::BeginTable((def.name + "_regs").c_str(), 2,
+                                              ImGuiTableFlags_Borders |
+                                                  ImGuiTableFlags_RowBg)) {
+                            ImGui::TableSetupColumn("Name (Offset)");
+                            ImGui::TableSetupColumn("Value");
+                            ImGui::TableHeadersRow();
+
+                            const auto &live_regs = active_dp->get_registers();
+                            for (const auto &rdef : def.registers) {
+                                ImGui::TableNextRow();
+                                ImGui::TableSetColumnIndex(0);
+                                ImGui::Text("%s (+%d)", rdef.name.c_str(),
+                                            rdef.offset);
+
+                                ImGui::TableSetColumnIndex(1);
+                                uint64_t val = live_regs.count(rdef.name)
+                                                   ? live_regs.at(rdef.name)
+                                                   : 0;
+                                ImGui::TextColored(
+                                    ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "0x%02X",
+                                    (unsigned int)val);
+                                ImGui::SameLine();
+                                ImGui::TextDisabled("(%llu)", val);
+                            }
+                            ImGui::EndTable();
+                        }
+                    }
+
+                    const auto &ivars = active_dp->get_internal_vars();
+                    if (!ivars.empty()) {
+                        ImGui::Spacing();
+                        ImGui::Text("Internal Hardware State (Hidden):");
+                        if (ImGui::BeginTable((def.name + "_ivars").c_str(), 2,
+                                              ImGuiTableFlags_Borders |
+                                                  ImGuiTableFlags_RowBg)) {
+                            ImGui::TableSetupColumn("Variable");
+                            ImGui::TableSetupColumn("Value");
+                            ImGui::TableHeadersRow();
+
+                            for (const auto &[var_name, val] : ivars) {
+                                ImGui::TableNextRow();
+                                ImGui::TableSetColumnIndex(0);
+                                ImGui::TextDisabled("%s", var_name.c_str());
+
+                                ImGui::TableSetColumnIndex(1);
+                                ImGui::Text("%llu", val);
+                            }
+                            ImGui::EndTable();
+                        }
+                    }
+                }
             }
             ImGui::Separator();
         }
@@ -736,7 +807,7 @@ int main(int argc, char **argv) {
         UI_MicrocodePipeline(cpu);
         UI_Assembler(cpu, gui, p_state);
         UI_ProgramView(cpu);
-        UI_Peripherals(cfg, p_state);
+        UI_Peripherals(cpu, cfg, p_state);
 
         // Rendering
         ImGui::Render();

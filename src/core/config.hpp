@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <nlohmann/json.hpp>
+#include <nlohmann/json_fwd.hpp>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -40,12 +41,26 @@ struct FlagDef {
     std::string type; // "zero", "carry", "overflow", "negative", etc.
 };
 
+struct PeripheralRegisterDef {
+    std::string name;
+    int offset;
+    int size_bytes;
+    std::string access;
+    uint64_t initial;
+    nlohmann::json on_read;
+    nlohmann::json on_write;
+};
+
 struct PeripheralDef {
     std::string name;
     std::string type;
     uint32_t address_start;
     uint32_t address_end;
     std::unordered_map<std::string, std::string> parameters;
+
+    std::vector<PeripheralRegisterDef> registers;
+    std::unordered_map<std::string, uint64_t> internal_state;
+    nlohmann::json tick_behavior;
 };
 
 struct Config {
