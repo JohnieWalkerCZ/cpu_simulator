@@ -52,7 +52,7 @@ void Executor::step_uop() {
         current_inst_ = DecodedInstruction();
 
         int unit_bits = config_.data_width;
-        uint64_t first_unit = mem_.read(static_cast<uint32_t>(fetch_pc_));
+        uint64_t first_unit = mem_.read(static_cast<uint32_t>(fetch_pc_), true);
         first_unit &= ((1ULL << unit_bits) - 1);
 
         uint8_t opcode = decoder_.peek_opcode(first_unit);
@@ -62,7 +62,7 @@ void Executor::step_uop() {
         uint64_t raw = first_unit;
         for (int i = 1; i < units_fetched_; ++i) {
             uint64_t next_unit =
-                mem_.read(static_cast<uint32_t>(fetch_pc_ + i));
+                mem_.read(static_cast<uint32_t>(fetch_pc_ + i), true);
             next_unit &= ((1ULL << unit_bits) - 1);
             raw = (raw << unit_bits) | next_unit;
         }

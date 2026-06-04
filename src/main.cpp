@@ -23,6 +23,8 @@ struct GUIState {
     char asm_source[8 * 1000] = "HLT";
     std::string asm_status = "";
     bool asm_error = false;
+
+    std::string cpu_error_message = "";
 };
 
 struct PeripheralsState {
@@ -316,17 +318,34 @@ void UI_ControlTower(CPU &cpu, GUIState &state, PeripheralsState &p_state) {
     }
 
     ImGui::SameLine();
-    if (ImGui::Button("STEP INST"))
-        cpu.step();
+    if (ImGui::Button("STEP INST") && state.cpu_error_message == "")
+        try {
+            cpu.step();
+        } catch (const std::exception &e) {
+            state.is_running = false;
+            state.cpu_error_message = e.what();
+        }
 
     ImGui::SameLine();
-    if (ImGui::Button("STEP UOP"))
-        cpu.step_uop();
+    if (ImGui::Button("STEP UOP") && state.cpu_error_message == "")
+        try {
+            cpu.step_uop();
+        } catch (const std::exception &e) {
+            state.is_running = false;
+            state.cpu_error_message = e.what();
+        }
 
     ImGui::SameLine();
     if (ImGui::Button("RESET")) {
         cpu.reset();
         ResetPeripheralsState(cpu.get_config(), p_state);
+        state.cpu_error_message = "";
+    }
+
+    if (!state.cpu_error_message.empty()) {
+        ImGui::Separator();
+        ImGui::TextColored(ImVec4(1.0f, 0.2f, 0.2f, 1.0f), "HARDWARE FAULT:");
+        ImGui::TextWrapped("%s", state.cpu_error_message.c_str());
     }
 
     ImGui::Separator();
@@ -777,17 +796,22 @@ int main(int argc, char **argv) {
                 done = true;
         }
 
-        // Automatic Clock Timing
-        if (gui.is_running && !cpu.is_halted()) {
+        if (gui.is_running && !cpu.is_halted() &&
+            gui.cpu_error_message.empty()) {
             double current_time = SDL_GetTicks() / 1000.0;
             double interval = 1.0 / gui.clock_speed;
-            if (current_time - gui.last_step_time >= interval) {
-                if (gui.run_by_uop) {
-                    cpu.step_uop();
-                } else {
-                    cpu.step();
-                }
 
+            if (current_time - gui.last_step_time >= interval) {
+                try {
+                    if (gui.run_by_uop) {
+                        cpu.step_uop();
+                    } else {
+                        cpu.step();
+                    }
+                } catch (const std::exception &e) {
+                    gui.is_running = false;
+                    gui.cpu_error_message = e.what();
+                }
                 gui.last_step_time = current_time;
             }
         }

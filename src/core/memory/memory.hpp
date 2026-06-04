@@ -1,4 +1,5 @@
 #pragma once
+#include "../config.hpp"
 #include <cstdint>
 #include <functional>
 #include <vector>
@@ -15,9 +16,9 @@ struct MMIORegion {
 
 class Memory {
   public:
-    Memory(size_t size, int word_size_bits = 8);
+    Memory(const Config &cfg);
 
-    uint64_t read(uint32_t address) const;
+    uint64_t read(uint32_t address, bool is_execute = false) const;
     void write(uint32_t address, uint64_t value);
 
     std::vector<uint8_t> read_bytes(uint32_t address, size_t count) const;
@@ -45,5 +46,8 @@ class Memory {
     int word_size_bytes_;
     uint64_t mask_;
     std::vector<MMIORegion> io_regions_;
+    std::vector<MemorySegmentDef> segments_;
     const MMIORegion *find_io_region(uint32_t address) const;
+    void check_access(uint32_t address, bool reg_r, bool reg_w,
+                      bool reg_x) const;
 };

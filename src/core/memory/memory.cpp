@@ -5,52 +5,76 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
-Memory::Memory(size_t size, int word_size_bits)
-    : memory_(size, 0), word_size_bytes_((word_size_bits + 7) / 8) {
-    if (word_size_bits != 4 && word_size_bits != 8 && word_size_bits != 16 &&
-        word_size_bits != 32 && word_size_bits != 64) {
-        throw std::runtime_error("Unsupported word size: " +
-                                 std::to_string(word_size_bits) + " bits");
+Memory::Memory(const Config &config)
+    : memory_(config.memory_size, 0),
+      word_size_bytes_((config.data_width + 7) / 8),
+      segments_(config.memory_segments) {
+
+    if (config.data_width != 4 && config.data_width != 8 &&
+        config.data_width != 16 && config.data_width != 32 &&
+        config.data_width != 64) {
+        throw std::runtime_error("Unsupported word size.");
     }
 
     if (word_size_bytes_ == 0)
         word_size_bytes_ = 1;
-
-    if (word_size_bytes_ == 8) {
+    if (word_size_bytes_ == 8)
         mask_ = UINT64_MAX;
-    } else {
-        mask_ = (1ULL << word_size_bits) - 1;
-    }
+    else
+        mask_ = (1ULL << config.data_width) - 1;
 }
 
-uint64_t Memory::read(uint32_t address) const {
+void Memory::check_access(uint32_t address, bool req_r, bool req_w,
+                          bool req_x) const {
     if (!is_valid_address(address)) {
-        throw std::runtime_error("Memory read out of bounds: " +
-                                 std::to_string(address));
+        throw std::runtime_error("Memory Access Violation: Address 0x" +
+                                 std::to_string(address) +
+                                 " is out of physical bounds.");
     }
 
+    for (const auto &seg : segments_) {
+        if (address >= seg.start && address <= seg.end) {
+            if (req_r && !seg.r)
+                throw std::runtime_error(
+                    "Memory Protection Fault: Read violation at 0x" +
+                    std::to_string(address));
+            if (req_w && !seg.w)
+                throw std::runtime_error(
+                    "Memory Protection Fault: Write violation at 0x" +
+                    std::to_string(address));
+            if (req_x && !seg.x)
+                throw std::runtime_error(
+                    "Memory Protection Fault: Execution violation at 0x" +
+                    std::to_string(address));
+            return;
+        }
+    }
+    throw std::runtime_error("Memory Protection Fault: Address 0x" +
+                             std::to_string(address) + " is unmapped.");
+}
+
+uint64_t Memory::read(uint32_t address, bool is_execute) const {
     if (auto reg = find_io_region(address)) {
         return reg->read_cb ? reg->read_cb(address) : 0;
     }
+
+    check_access(address, !is_execute, false, is_execute);
 
     uint64_t result = 0;
     for (int i = 0; i < word_size_bytes_; ++i) {
         result |= (static_cast<uint64_t>(memory_[address + i])) << (i * 8);
     }
-
     return result;
 }
 
 void Memory::write(uint32_t address, uint64_t value) {
-    if (!is_valid_address(address)) {
-        throw std::runtime_error("Memory read out of bounds: " +
-                                 std::to_string(address));
-    }
-
     if (auto reg = find_io_region(address)) {
         if (reg->write_cb)
             reg->write_cb(address, value);
+        return;
     }
+
+    check_access(address, false, true, false);
 
     value &= mask_;
     for (int i = 0; i < word_size_bytes_; ++i) {

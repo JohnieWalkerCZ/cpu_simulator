@@ -13,6 +13,23 @@ Config Config::from_json(const nlohmann::json &j) {
     cfg.addr_width = j["address_bus"].at("width").get<int>();
     cfg.memory_size = j["memory"].at("size").get<int>();
 
+    if (j["memory"].contains("segments")) {
+        for (const auto &seg : j["memory"]["segments"]) {
+            MemorySegmentDef def;
+            def.name = seg.at("name").get<std::string>();
+            def.start =
+                std::stoul(seg.at("start").get<std::string>(), nullptr, 0);
+            def.end = std::stoul(seg.at("end").get<std::string>(), nullptr, 0);
+            def.r = seg.value("R", true);
+            def.w = seg.value("W", true);
+            def.x = seg.value("X", true);
+            cfg.memory_segments.push_back(def);
+        }
+    } else {
+        cfg.memory_segments.push_back(
+            {"FLAT_RAM", 0, (uint32_t)cfg.memory_size - 1, true, true, true});
+    }
+
     if (j.contains("registers")) {
         const auto &regs = j["registers"];
         if (regs.contains("general_purpose")) {

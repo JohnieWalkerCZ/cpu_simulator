@@ -63,6 +63,13 @@ struct PeripheralDef {
     nlohmann::json tick_behavior;
 };
 
+struct MemorySegmentDef {
+    std::string name;
+    uint32_t start;
+    uint32_t end;
+    bool r, w, x;
+};
+
 struct Config {
     std::string name;
     int data_width;
@@ -74,6 +81,7 @@ struct Config {
     std::vector<ALUOp> alu_ops;
     std::vector<Instruction> instructions;
     std::vector<PeripheralDef> peripherals;
+    std::vector<MemorySegmentDef> memory_segments;
 
     bool validate() const;
     std::string get_error() const;

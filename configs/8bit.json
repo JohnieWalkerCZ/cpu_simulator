@@ -2,7 +2,14 @@
   "name": "8-Bit",
   "data_bus": { "width": 8 },
   "address_bus": { "width": 16 },
-  "memory": { "size": 65536 },
+  "memory": { 
+    "size": 65536,
+    "segments": [
+      { "name": "ROM", "start": "0x0000", "end": "0x1FFF", "R": true, "W": false, "X": true },
+      { "name": "RAM", "start": "0x2000", "end": "0xFDFF", "R": true, "W": true,  "X": false },
+      { "name": "STACK", "start": "0xFE00", "end": "0xFFFF", "R": true, "W": true,  "X": false }
+    ]
+  },
   "registers": {
     "general_purpose": [
       { "name": "R0", "width": 8, "initial": 0 },

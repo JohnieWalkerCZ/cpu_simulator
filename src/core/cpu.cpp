@@ -4,7 +4,7 @@
 #include <vector>
 
 CPU::CPU(Config &cfg)
-    : cfg_(cfg), regs_(cfg), mem_(cfg.memory_size, cfg.data_width), alu_(cfg),
+    : cfg_(cfg), regs_(cfg), mem_(cfg), alu_(cfg),
       executor_(cfg, regs_, mem_, alu_), code_(std::vector<uint8_t>()),
       load_address_(0) {
     reset();
