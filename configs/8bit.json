@@ -12,7 +12,27 @@
   },
   "registers": {
     "general_purpose": [
-      { "name": "R0", "width": 8, "initial": 0 },
+      { 
+        "name": "R0", "width": 8, "initial": 0,
+        "sub_registers": [
+          {
+            "name": "R0H", "width": 4, "offset": 4,
+            "sub_registers": [
+              {"name": "R0H_even", "width": 2, "mask": "0b01"},
+              {"name": "R0H_odd", "width": 2, "mask": "0b10"}
+            ]
+          },
+          {
+            "name": "R0L", "width": 4, "offset": 0,
+            "sub_registers": [
+              {"name": "R0L_even", "width": 2, "mask": "0b01"},
+              {"name": "R0L_odd", "width": 2, "mask": "0b10"}
+            ]
+          },
+          {"name": "R0_even", "width": 4, "mask": "0b0101"},
+          {"name": "R0_odd", "width": 4, "mask": "0b1010"}
+        ]  
+      },
       { "name": "R1", "width": 8, "initial": 0 },
       { "name": "R2", "width": 8, "initial": 0 },
       { "name": "R3", "width": 8, "initial": 0 }

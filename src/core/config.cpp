@@ -5,6 +5,115 @@
 #include <string>
 #include <unordered_set>
 
+static void parse_mask_pattern(const nlohmann::json &val, uint64_t &pattern,
+                               int &pattern_len, int reg_width) {
+    if (val.is_number()) {
+        pattern = val.get<uint64_t>();
+        pattern_len = reg_width;
+        return;
+    }
+    std::string str = val.get<std::string>();
+    if (str.compare(0, 2, "0b") == 0 || str.compare(0, 2, "0B") == 0) {
+        std::string pat_str = str.substr(2);
+        pattern_len = static_cast<int>(pat_str.size());
+        pattern = std::stoull(pat_str, nullptr, 2);
+    } else if (str.compare(0, 2, "0x") == 0 || str.compare(0, 2, "0X") == 0) {
+        pattern_len = static_cast<int>((str.size() - 2) * 4);
+        pattern = std::stoull(str, nullptr, 16);
+    } else {
+        pattern_len = 8;
+        pattern = std::stoull(str, nullptr, 10);
+    }
+
+    if (pattern_len > reg_width) {
+        pattern_len = reg_width;
+        pattern &= ((1ULL << pattern_len) - 1);
+    }
+}
+
+static void parse_register_recursive(const nlohmann::json &j_reg, Config &cfg,
+                                     int &next_phys_idx, int parent_phys_idx,
+                                     const std::string &parent_role,
+                                     const std::vector<int> &parent_mapping) {
+    RegisterDef reg;
+    reg.name = j_reg.at("name").get<std::string>();
+    reg.width = j_reg.at("width").get<int>();
+
+    if (j_reg.contains("initial")) {
+        if (j_reg["initial"].is_string()) {
+            reg.initial =
+                std::stoull(j_reg["initial"].get<std::string>(), nullptr, 0);
+        } else {
+            reg.initial = j_reg["initial"].get<uint64_t>();
+        }
+    } else {
+        reg.initial = 0ULL;
+    }
+
+    reg.role = j_reg.value("role", "");
+
+    if (parent_phys_idx == -1) {
+        reg.is_alias = false;
+        reg.physical_index = next_phys_idx++;
+        reg.bit_mapping.resize(reg.width);
+        for (int i = 0; i < reg.width; ++i) {
+            reg.bit_mapping[i] = i;
+        }
+    } else {
+        reg.is_alias = true;
+        reg.physical_index = parent_phys_idx;
+        if (reg.role.empty()) {
+            reg.role = parent_role;
+        }
+
+        if (j_reg.contains("mask")) {
+            uint64_t pattern = 0;
+            int pattern_len = 0;
+            parse_mask_pattern(j_reg["mask"], pattern, pattern_len, reg.width);
+
+            int parent_width = static_cast<int>(parent_mapping.size());
+            std::vector<int> active_indices;
+            for (int i = 0; i < parent_width; ++i) {
+                int bit_idx = i % pattern_len;
+                if ((pattern >> bit_idx) & 1) {
+                    active_indices.push_back(i);
+                }
+            }
+
+            // positions
+            reg.bit_mapping.resize(reg.width);
+            for (int i = 0; i < reg.width; ++i) {
+                if (i < static_cast<int>(active_indices.size())) {
+                    reg.bit_mapping[i] = parent_mapping[active_indices[i]];
+                } else {
+                    reg.bit_mapping[i] = 0;
+                }
+            }
+        } else {
+            int offset = j_reg.value("offset", 0);
+            reg.bit_mapping.resize(reg.width);
+            for (int i = 0; i < reg.width; ++i) {
+                int parent_idx = offset + i;
+                if (parent_idx < static_cast<int>(parent_mapping.size())) {
+                    reg.bit_mapping[i] = parent_mapping[parent_idx];
+                } else {
+                    reg.bit_mapping[i] = 0;
+                }
+            }
+        }
+    }
+
+    cfg.registers.push_back(reg);
+
+    if (j_reg.contains("sub_registers")) {
+        for (const auto &child : j_reg["sub_registers"]) {
+            parse_register_recursive(child, cfg, next_phys_idx,
+                                     reg.physical_index, reg.role,
+                                     reg.bit_mapping);
+        }
+    }
+}
+
 Config Config::from_json(const nlohmann::json &j) {
     Config cfg;
 
@@ -30,26 +139,18 @@ Config Config::from_json(const nlohmann::json &j) {
             {"FLAT_RAM", 0, (uint32_t)cfg.memory_size - 1, true, true, true});
     }
 
+    int next_phys_idx = 0;
     if (j.contains("registers")) {
         const auto &regs = j["registers"];
         if (regs.contains("general_purpose")) {
             for (const auto &r : regs["general_purpose"]) {
-                RegisterDef reg;
-                reg.name = r.at("name").get<std::string>();
-                reg.width = r.at("width").get<int>();
-                reg.initial = r.value("initial", 0ULL);
-                reg.role = "";
-                cfg.registers.push_back(reg);
+                parse_register_recursive(r, cfg, next_phys_idx, -1, "", {});
             }
         }
         if (regs.contains("special")) {
             for (const auto &r : regs["special"]) {
-                RegisterDef reg;
-                reg.name = r.at("name").get<std::string>();
-                reg.width = r.at("width").get<int>();
-                reg.initial = r.value("initial", 0ULL);
-                reg.role = r.value("role", "");
-                cfg.registers.push_back(reg);
+                parse_register_recursive(r, cfg, next_phys_idx, -1,
+                                         r.value("role", ""), {});
             }
         }
     }

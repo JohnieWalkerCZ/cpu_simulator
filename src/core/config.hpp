@@ -11,6 +11,12 @@ struct RegisterDef {
     int width;
     uint64_t initial;
     std::string role;
+
+    bool is_alias = false;
+    int physical_index = -1;
+    int absolute_bit_offset = 0;
+
+    std::vector<int> bit_mapping;
 };
 
 struct ALUOp {
