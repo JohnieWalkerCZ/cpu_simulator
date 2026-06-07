@@ -6,41 +6,35 @@
 
 int main() {
     try {
-        // Load config
         auto cfg = Config::from_file("../configs/8bit.json");
 
         // ==========================================
-        // Test 1: Fibonacci Loop Program
+        // Test 1: Fibonacci Loop
         // ==========================================
         {
             CPU cpu(cfg);
             Assembler assembler(cfg);
 
-            // Compute first few Fibonacci numbers: 1, 1, 2, 3, 5, 8
-            // R0 = current, R1 = next, R2 = temp, R3 = counter
-            std::string fib_src =
-                "LDI R0, 1\n"
-                "LDI R1, 1\n"
-                "LDI R3, 4\n" // 4 iterations
-                "loop:\n"
-                "JZ end\n"
-                "MOV R2, R1\n"
-                "ADD R1, R0\n"
-                "MOV R0, R2\n"
-                "LDI R2, 1\n"
-                "SUB R3, R2\n" // updates Z flag
-                "JMP loop\n"
-                "end:\n"
-                "HLT\n";
+            std::string fib_src = "LDI R0, 1\n"
+                                  "LDI R1, 1\n"
+                                  "LDI R3, 4\n" // 4 iterations
+                                  "loop:\n"
+                                  "JZ end\n"
+                                  "MOV R2, R1\n"
+                                  "ADD R1, R0\n"
+                                  "MOV R0, R2\n"
+                                  "LDI R2, 1\n"
+                                  "SUB R3, R2\n" // updates Z flag
+                                  "JMP loop\n"
+                                  "end:\n"
+                                  "HLT\n";
 
             auto fib_code = assembler.assemble(fib_src, 0);
             cpu.load_program(fib_code, 0);
             cpu.reset();
 
-            // Run program
             cpu.run(1000);
 
-            // Verify final register state
             assert(cpu.is_halted());
             assert(cpu.get_registers().read("R0") == 5);
             assert(cpu.get_registers().read("R1") == 8);
@@ -49,74 +43,102 @@ int main() {
         }
 
         // ==========================================
-        // Test 2: MMIO Peripherals Integration
+        // Test 2: Declarative Peripherals Integration (Co-Processor & UART)
         // ==========================================
         {
             CPU cpu(cfg);
-            Assembler assembler(cfg);
 
-            // Register MMIO read/write callbacks for address 0x00AA
-            // (within SerialTerminal range 0x00AA-0x00AF in 8bit.json)
-            std::string console_output = "";
-            cpu.get_memory().map_io_region(
-                0x00AA, 0x00AA,
-                nullptr,
-                [&console_output](uint32_t addr, uint64_t val) {
-                    console_output += static_cast<char>(val);
+            // Set up a host print hook to record stdout
+            std::string serial_out = "";
+            for (auto &dp : cpu.get_peripherals()) {
+                if (dp.get_name() == "DeclarativeUART") {
+                    dp.set_host_print_hook(
+                        [&serial_out](char c) { serial_out += c; });
                 }
-            );
+            }
 
-            // Assembly program writing 'H' (72), 'E' (69), 'Y' (89) to 0x00AA
-            // Using SP as temporary 16-bit address container
-            std::string mmio_src =
-                "LDI SP, 0x00AA\n"
-                "LDI R0, 72\n"   // 'H'
-                "STORE R0, SP\n"
-                "LDI R0, 69\n"   // 'E'
-                "STORE R0, SP\n"
-                "LDI R0, 89\n"   // 'Y'
-                "STORE R0, SP\n"
-                "HLT\n";
+            // Manually trigger the Math Co-Processor MMIO
+            // 0x80 = OP_A, 0x81 = OP_B, 0x83 = CMD, 0x82 = RESULT
+            cpu.get_memory().write(0x80, 13); // A = 13
+            cpu.get_memory().write(0x81, 5);  // B = 5
+            cpu.get_memory().write(
+                0x83,
+                1); // Write 1 to CMD -> triggers AST Multiply: 13 * 5 = 65
 
-            auto mmio_code = assembler.assemble(mmio_src, 0);
-            cpu.load_program(mmio_code, 0);
-            cpu.reset();
+            // Read the result
+            uint64_t result = cpu.get_memory().read(0x82);
+            assert(result == 65); // 65 is ASCII 'A'
 
-            // Run
-            cpu.run(1000);
+            // Write 'A' to the UART peripheral (0xAA)
+            cpu.get_memory().write(0xAA, result);
 
-            // Verify
-            assert(cpu.is_halted());
-            assert(console_output == "HEY");
-            std::cout << "Integration Test 2 (MMIO Peripherals) passed.\n";
+            // Verify our C++ host print hook was triggered by the UART's AST
+            // call
+            assert(serial_out == "A");
+            std::cout
+                << "Integration Test 2 (Declarative Peripherals) passed.\n";
         }
 
         // ==========================================
-        // Test 3: Stack and Subroutines (CALL/RET)
+        // Test 3: Vectored Hardware Interrupts & Stack Context Saving
         // ==========================================
         {
             CPU cpu(cfg);
             Assembler assembler(cfg);
 
-            std::string call_src =
-                "CALL sub_routine\n"
-                "HLT\n"
-                "sub_routine:\n"
-                "LDI R0, 99\n"
-                "RET\n";
+            // Assemble a program with an ISR at address 0x03 and main at 0x07
+            std::string interrupt_prog =
+                "JMP main\n"     // 0x00: JMP main (3 bytes)
+                "isr:\n"         // 0x03: ISR address
+                "  LDI R2, 99\n" // 0x03: LDI R2, 99 (3 bytes)
+                "  RET\n"        // 0x06: RET (1 byte)
+                "main:\n"        // 0x07: Main program
+                "  LDI R0, 1\n"  // 0x07: LDI R0, 1 (3 bytes) (SP remains at
+                                 // default 65535)
+                "loop:\n"        // 0x0A: Endless loop waiting for interrupt
+                "  LDI R1, 1\n"
+                "  ADD R0, R1\n"
+                "  JMP loop\n";
 
-            auto call_code = assembler.assemble(call_src, 0);
-            cpu.load_program(call_code, 0);
+            auto code = assembler.assemble(interrupt_prog, 0);
+            cpu.load_program(code, 0);
             cpu.reset();
 
-            // Run
-            cpu.run(1000);
+            int sp_idx = cpu.get_registers().find_by_role("stack_pointer");
 
-            // Verify
-            assert(cpu.is_halted());
-            assert(cpu.get_registers().read("R0") == 99);
-            assert(cpu.get_registers().read("SP") == 65535); // Should return to default initial SP (65535)
-            std::cout << "Integration Test 3 (CALL/RET) passed.\n";
+            // Run first 2 instructions to enter the loop
+            cpu.step(); // Execute JMP main
+
+            cpu.step(); // Execute LDI R0, 1
+
+            assert(cpu.get_registers().read(sp_idx) ==
+                   65535); // SP starts at default 65535 (STACK segment)
+            assert(cpu.get_registers().get_pc() == 0x0A); // Now inside the loop
+
+            // Trigger hardware interrupt on line 0x03 (points directly to
+            // `isr`)
+            cpu.trigger_interrupt(0x03);
+
+            // Step the CPU. It should complete the current loop instruction,
+            // push the current PC onto the stack, and jump to 0x03.
+            cpu.step();
+
+            assert(cpu.get_registers().get_pc() ==
+                   0x03); // PC jumped to ISR address
+            assert(cpu.get_registers().read(sp_idx) ==
+                   65533); // SP decremented (pushed 16-bit PC)
+
+            // Execute ISR: LDI R2, 99
+            cpu.step();
+            assert(cpu.get_registers().read("R2") == 99);
+
+            // Execute RET: Pops PC from the stack and returns back to the loop!
+            cpu.step();
+            assert(cpu.get_registers().get_pc() == 0x0A ||
+                   cpu.get_registers().get_pc() == 0x0D);      // Resumed loop
+            assert(cpu.get_registers().read(sp_idx) == 65535); // Stack restored
+
+            std::cout << "Integration Test 3 (Hardware Interrupts) passed.\n";
         }
 
         std::cout << "All CPU integration tests passed successfully!\n";

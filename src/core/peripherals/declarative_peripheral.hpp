@@ -35,6 +35,9 @@ class DeclarativePeripheral {
         return internal_vars_;
     }
 
+    uint32_t get_start_address() const { return def_.address_start; }
+    uint32_t get_end_address() const { return def_.address_end; }
+
   private:
     CPU &cpu_;
     PeripheralDef def_;

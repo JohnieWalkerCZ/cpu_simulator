@@ -162,7 +162,7 @@
         "opcode": 11,
         "encoding": [11, "address"],
         "microcode": [
-          { "action": "alu", "op": "SUB", "a": "$SP", "b": "#2", "out": "$SP" },
+          { "action": "alu", "op": "SUB", "a": "$SP", "b": "#ADDR_SIZE", "out": "$SP" },
           { "action": "mem_write", "addr": "$SP", "data": "$NEXT_PC" },
           { "action": "branch", "target": "@address" }
         ]
@@ -173,7 +173,7 @@
         "encoding": [12],
         "microcode": [
           { "action": "mem_read", "addr": "$SP", "out": "$PC" },
-          { "action": "alu", "op": "ADD", "a": "$SP", "b": "#2", "out": "$SP" }
+          { "action": "alu", "op": "ADD", "a": "$SP", "b": "#ADDR_SIZE", "out": "$SP" }
         ]
       },
       {

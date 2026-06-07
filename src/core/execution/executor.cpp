@@ -37,6 +37,9 @@ void Executor::reset() {
     cycles_ = 0;
     current_uop_cycles_ = 0;
     current_inst_ = DecodedInstruction();
+
+    interrupt_pending_ = false;
+    pending_interrupt_id_ = -1;
 }
 
 void Executor::step_uop() {
@@ -130,11 +133,17 @@ void Executor::step_uop() {
 
         if (interrupt_pending_) {
             uint64_t current_sp = regs_.read(sp_idx_);
-            uint64_t new_sp =
-                current_sp -
-                (config_.data_width / 8 > 0 ? config_.data_width / 8 : 1);
-
+            int addr_bytes = (config_.addr_width + 7) / 8;
+            uint64_t new_sp = current_sp - addr_bytes;
             regs_.set_sp(new_sp);
+
+            uint64_t pc_val = regs_.get_pc();
+            for (int i = 0; i < addr_bytes; ++i) {
+                uint8_t byte_val = (pc_val >> (i * 8)) & 0xFF;
+                mem_.write(static_cast<uint32_t>(new_sp + i), byte_val);
+            }
+
+            regs_.set_pc(pending_interrupt_id_);
             interrupt_pending_ = false;
         }
 
@@ -166,12 +175,27 @@ void Executor::perform_uop(const MicroOp &uop) {
         }
     } else if (uop.action == "mem_read") {
         uint64_t addr = resolve_operand(uop.args.at("addr"));
-        uint64_t val = mem_.read(static_cast<uint32_t>(addr));
+        int width = get_operand_width(uop.args.at("out"));
+        int bytes = (width + 7) / 8;
+
+        uint64_t val = 0;
+        for (int i = 0; i < bytes; ++i) {
+            uint64_t byte_val =
+                mem_.read(static_cast<uint32_t>(addr + i)) & 0xFF;
+            val |= (byte_val << (i * 8));
+        }
         write_operand(uop.args.at("out"), val);
+
     } else if (uop.action == "mem_write") {
         uint64_t addr = resolve_operand(uop.args.at("addr"));
         uint64_t data = resolve_operand(uop.args.at("data"));
-        mem_.write(static_cast<uint32_t>(addr), data);
+        int width = get_operand_width(uop.args.at("data"));
+        int bytes = (width + 7) / 8;
+
+        for (int i = 0; i < bytes; ++i) {
+            uint8_t byte_val = (data >> (i * 8)) & 0xFF;
+            mem_.write(static_cast<uint32_t>(addr + i), byte_val);
+        }
     } else if (uop.action == "branch") {
         bool cond = true;
         if (uop.args.count("condition")) {
@@ -264,6 +288,8 @@ uint64_t Executor::resolve_operand(const std::string &arg) {
         std::string val = arg.substr(1);
         if (val == "WORD_SIZE")
             return config_.data_width / 8 > 0 ? config_.data_width / 8 : 1;
+        if (val == "ADDR_SIZE")
+            return (config_.addr_width + 7) / 8;
         return std::stoull(val, nullptr, 0);
     }
 

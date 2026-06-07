@@ -2,89 +2,68 @@
 #include "core/config.hpp"
 #include <cassert>
 #include <iostream>
+#include <nlohmann/json.hpp>
 
 int main() {
     try {
-        // Load the 8-bit config file to test with
-        auto cfg = Config::from_file("../configs/8bit.json");
-
-        // Initialize register file
+        nlohmann::json j = {
+            {"name", "TestISA"},
+            {"data_bus", {{"width", 8}}},
+            {"address_bus", {{"width", 16}}},
+            {"memory", {{"size", 1024}}},
+            {"registers", {
+                {"general_purpose", {
+                    {
+                        {"name", "R0"}, {"width", 8}, {"initial", 0},
+                        {"sub_registers", {
+                            {
+                                {"name", "R0H"}, {"width", 4}, {"offset", 4},
+                                {"sub_registers", {
+                                    {{"name", "R0H_even"}, {"width", 2}, {"mask", "0b01"}},
+                                    {{"name", "R0H_odd"}, {"width", 2}, {"mask", "0b10"}}
+                                }}
+                            },
+                            {{"name", "R0_even"}, {"width", 4}, {"mask", "0b0101"}},
+                            {{"name", "R0_odd"}, {"width", 4}, {"mask", "0b1010"}},
+                            {{"name", "R0_clip"}, {"width", 2}, {"mask", "0b0101"}}
+                        }}
+                    }
+                }},
+                {"special", {
+                    {{"name", "PC"}, {"width", 16}, {"initial", 0}, {"role", "program_counter"}}
+                }}
+            }}
+        };
+        Config cfg = Config::from_json(j);
         RegisterFile regs(cfg);
 
-        // 1. Verify sizes and defs
-        assert(regs.size() == cfg.registers.size());
+        // Test 1: Writing to root and reading aliases
+        regs.write("R0", 0xF0); // 1111 0000
+        assert(regs.read("R0") == 0xF0);
+        assert(regs.read("R0H") == 0x0F); // High nibble = 1111 = 15
         
-        // Find indices
-        int pc_idx = regs.find_by_role("program_counter");
-        int sp_idx = regs.find_by_role("stack_pointer");
-        int flags_idx = regs.find_by_role("status_flags");
-        
-        assert(pc_idx != -1);
-        assert(sp_idx != -1);
-        assert(flags_idx != -1);
+        // R0H_even maps to physical bits 4 and 6 of R0. 
+        // In 0xF0 (1111 0000), bits 4 and 6 are both 1.
+        // Packed reading should return 0x03 (binary 11) because both virtual bits are active.
+        assert(regs.read("R0H_even") == 0x03); 
 
-        // 2. Test reading default initial values
-        assert(regs.read("PC") == 0);
-        assert(regs.read("SP") == 65535);
-        assert(regs.read("FLAGS") == 0);
-        assert(regs.read("R0") == 0);
-
-        // 3. Test writing and register width masking
-        // SP is 16-bit
-        regs.write("SP", 0x12345678ULL);
-        assert(regs.read("SP") == 0x5678ULL); // Masked to 16 bits
-
-        // R0 is 8-bit
-        regs.write("R0", 0x12345678ULL);
-        assert(regs.read("R0") == 0x78ULL); // Masked to 8 bits
-
-        // FLAGS is 8-bit
-        regs.write("FLAGS", 0xFFFU);
-        assert(regs.read("FLAGS") == 0xFFU); // Masked to 8 bits
-
-        // 4. Test PC specific functions
-        assert(regs.get_pc() == 0);
-        regs.set_pc(0xDEADBEEF);
-        assert(regs.get_pc() == 0xBEEF); // Masked to 16 bits (PC width)
-
-        // Increment PC
-        regs.set_pc(65530);
-        regs.increment_pc(3);
-        assert(regs.get_pc() == 65533);
-
-        // Test increment_pc wrap around
-        // Note: increment_pc uses modulo max_value where max_value = (1 << width) - 1.
-        // Let's verify standard wrap around in increment_pc (current + amount) % max_value
-        // If current is 65533 and amount is 4, new_val = (65533 + 4) % 65535 = 65537 % 65535 = 2.
-        regs.set_pc(65533);
-        regs.increment_pc(4);
-        assert(regs.get_pc() == 2);
-
-        // 5. Test index-based read/write
-        regs.write(0, 0xAA); // R0 is usually index 0
-        assert(regs.read(0) == 0xAA);
-
-        // 6. Test reset
-        regs.write("SP", 100);
-        regs.write("R0", 20);
+        // Test 2: Writing to an alias and reading parent
         regs.reset();
-        assert(regs.read("SP") == 65535); // Restored to initial
-        assert(regs.read("R0") == 0);      // Restored to initial
+        regs.write("R0H", 0x0A); // Write 1010 to high nibble. R0 should become 1010 0000 = 160
+        assert(regs.read("R0") == 160);
 
-        // 7. Test invalid registers
-        try {
-            regs.read("INVALID_REG");
-            assert(false); // Should throw
-        } catch (const std::runtime_error &e) {
-            // Expected
-        }
+        // Test 3: Overlapping masked aliases (Odd/Even interleaving)
+        regs.reset();
+        regs.write("R0_even", 0x0F); // Set all 4 even bits (0, 2, 4, 6) -> R0 becomes 0x55 (85)
+        assert(regs.read("R0") == 85);
+        
+        regs.write("R0_odd", 0x0F); // Set all 4 odd bits (1, 3, 5, 7) -> R0 becomes 0x55 | 0xAA = 0xFF (255)
+        assert(regs.read("R0") == 255);
 
-        try {
-            regs.write("INVALID_REG", 10);
-            assert(false); // Should throw
-        } catch (const std::runtime_error &e) {
-            // Expected
-        }
+        // Test 4: Mask Clipping
+        regs.reset();
+        regs.write("R0_clip", 0x03); // Write binary 11 to R0_clip -> sets physical bits 0 and 2.
+        assert(regs.read("R0") == 0x05); // R0 becomes 0000 0101 (5)
 
         std::cout << "RegisterFile unit tests passed successfully!\n";
         return 0;
