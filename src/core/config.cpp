@@ -1,6 +1,7 @@
 #include "config.hpp"
 #include <cstdint>
 #include <fstream>
+#include <iostream>
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
@@ -38,6 +39,9 @@ static void parse_register_recursive(const nlohmann::json &j_reg, Config &cfg,
     RegisterDef reg;
     reg.name = j_reg.at("name").get<std::string>();
     reg.width = j_reg.at("width").get<int>();
+    reg.is_coproc = j_reg.value("coproc", false);
+    reg.coproc_id = j_reg.value("coproc_id", -1);
+    reg.coproc_reg_id = j_reg.value("coproc_reg_id", -1);
 
     if (j_reg.contains("initial")) {
         if (j_reg["initial"].is_string()) {
@@ -121,14 +125,16 @@ Config Config::from_json(const nlohmann::json &j) {
     cfg.data_width = j["data_bus"].at("width").get<int>();
     cfg.addr_width = j["address_bus"].at("width").get<int>();
     cfg.memory_size = j["memory"].at("size").get<int>();
+    cfg.endianness = j["memory"].value("endianness", "little");
+    cfg.memory_architecture = j["memory"].value("architecture", "von_neumann");
 
     if (j["memory"].contains("segments")) {
         for (const auto &seg : j["memory"]["segments"]) {
             MemorySegmentDef def;
             def.name = seg.at("name").get<std::string>();
             def.start =
-                std::stoul(seg.at("start").get<std::string>(), nullptr, 0);
-            def.end = std::stoul(seg.at("end").get<std::string>(), nullptr, 0);
+                std::stoull(seg.at("start").get<std::string>(), nullptr, 0);
+            def.end = std::stoull(seg.at("end").get<std::string>(), nullptr, 0);
             def.r = seg.value("R", true);
             def.w = seg.value("W", true);
             def.x = seg.value("X", true);
@@ -163,7 +169,8 @@ Config Config::from_json(const nlohmann::json &j) {
                 FlagDef flag;
                 flag.name = f.at("name").get<std::string>();
                 flag.bit = f.at("bit").get<int>();
-                flag.type = f.at("type").get<std::string>();
+                flag.type = f.value("type", "");
+                flag.expression = f.value("expression", "");
                 cfg.alu_flags.push_back(flag);
             }
         }
@@ -194,7 +201,22 @@ Config Config::from_json(const nlohmann::json &j) {
             Instruction ins;
             ins.name = inst.at("name").get<std::string>();
             ins.opcode = inst.at("opcode").get<uint8_t>();
-            ins.format = inst.value("format", "RR");
+            ins.execution_latency = inst.value("latency", -1);
+
+            std::string mode_str = inst.value("latency_mode", "dynamic");
+            if (ins.execution_latency > 0) {
+                if (mode_str == "strict" || mode_str == "fixed") {
+                    ins.latency_mode = LatencyMode::STRICT;
+                } else if (mode_str == "bottleneck" || mode_str == "max") {
+                    ins.latency_mode = LatencyMode::BOTTLENECK;
+                } else if (mode_str == "additive") {
+                    ins.latency_mode = LatencyMode::ADDITIVE;
+                } else {
+                    ins.latency_mode = LatencyMode::BOTTLENECK;
+                }
+            } else {
+                ins.latency_mode = LatencyMode::DYNAMIC;
+            }
 
             if (inst.contains("encoding")) {
                 for (const auto &enc : inst["encoding"]) {
@@ -257,12 +279,12 @@ Config Config::from_json(const nlohmann::json &j) {
 
             if (p.contains("address")) {
                 def.address_start =
-                    std::stoul(p.at("address").get<std::string>(), nullptr, 0);
+                    std::stoull(p.at("address").get<std::string>(), nullptr, 0);
                 def.address_end = def.address_start;
             } else {
-                def.address_start = std::stoul(
+                def.address_start = std::stoull(
                     p.at("address_start").get<std::string>(), nullptr, 0);
-                def.address_end = std::stoul(
+                def.address_end = std::stoull(
                     p.at("address_end").get<std::string>(), nullptr, 0);
             }
 
@@ -340,7 +362,8 @@ bool Config::validate() const {
         return false;
     }
 
-    uint64_t max_adressable = 1ULL << addr_width;
+    uint64_t max_adressable =
+        (addr_width == 64) ? UINT64_MAX : (1ULL << addr_width);
     if (memory_size > max_adressable) {
         return false;
     }
@@ -384,15 +407,6 @@ bool Config::validate() const {
         alu_codes.insert(op.code);
 
         if (op.latency < 1)
-            return false;
-    }
-
-    for (const Instruction ins : instructions) {
-        if (opcodes.count(ins.opcode))
-            return false;
-        opcodes.insert(ins.opcode);
-        if (ins.format != "RR" && ins.format != "RI" && ins.format != "R" &&
-            ins.format != "R_M" && ins.format != "I")
             return false;
     }
 

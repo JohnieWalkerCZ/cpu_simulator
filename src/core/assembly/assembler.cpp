@@ -157,7 +157,8 @@ std::vector<uint8_t> Assembler::assemble(const std::string &source,
 
         int units = (total_bits + config_.data_width - 1) / config_.data_width;
         parsed_lines.push_back({tokens, matched_inst, total_bits, units});
-        current_addr += units;
+        int unit_bytes = (config_.data_width + 7) / 8;
+        current_addr += units * unit_bytes;
     }
 
     // Pass 2: Generate machine code
@@ -210,13 +211,23 @@ std::vector<uint8_t> Assembler::assemble(const std::string &source,
 
         accum <<= padding_bits;
 
+        int unit_bytes = (config_.data_width + 7) / 8;
+        bool is_little = (config_.endianness == "little");
+
         for (int shift = fetched_bits - config_.data_width; shift >= 0;
              shift -= config_.data_width) {
             uint64_t mask = (config_.data_width >= 64)
                                 ? ~0ULL
                                 : (1ULL << config_.data_width) - 1;
-            uint8_t unit = static_cast<uint8_t>((accum >> shift) & mask);
-            output.push_back(unit);
+            uint64_t unit_val = (accum >> shift) & mask;
+
+            for (int b = 0; b < unit_bytes; ++b) {
+                int byte_shift =
+                    is_little ? (b * 8) : ((unit_bytes - 1 - b) * 8);
+                uint8_t byte_val =
+                    static_cast<uint8_t>((unit_val >> byte_shift) & 0xFF);
+                output.push_back(byte_val);
+            }
         }
     }
 

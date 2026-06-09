@@ -177,6 +177,55 @@ void UI_MicrocodePipeline(CPU &cpu) {
             ImGui::TextDisabled("Raw: 0x%llX", current_inst.raw_bits);
             ImGui::Separator();
 
+            std::string mode_str = "DYNAMIC (MICRO-OP)";
+            ImVec4 mode_color = ImVec4(0.4f, 1.0f, 0.4f, 1.0f); // Green
+
+            if (inst_def->latency_mode == LatencyMode::STRICT) {
+                mode_str = "STRICT (FIXED)";
+                mode_color = ImVec4(1.0f, 0.4f, 0.4f, 1.0f); // Red
+            } else if (inst_def->latency_mode == LatencyMode::BOTTLENECK) {
+                mode_str = "BOTTLENECK (MAX)";
+                mode_color = ImVec4(1.0f, 0.8f, 0.2f, 1.0f); // Amber
+            } else if (inst_def->latency_mode == LatencyMode::ADDITIVE) {
+                mode_str = "ADDITIVE (OVERHEAD)";
+                mode_color = ImVec4(0.4f, 0.7f, 1.0f, 1.0f); // Blue
+            }
+
+            ImGui::Text("Latency Mode: ");
+            ImGui::SameLine();
+            ImGui::TextColored(mode_color, "%s", mode_str.c_str());
+
+            if (inst_def->execution_latency > 0) {
+                int curr_cyc = executor.get_current_execution_cycles();
+                int tgt_cyc = inst_def->execution_latency;
+
+                if (inst_def->latency_mode == LatencyMode::ADDITIVE) {
+                    ImGui::Text("Execution Stall Progress: ");
+                    ImGui::SameLine();
+                    ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f),
+                                       "%d Added Cycle(s) Pending", tgt_cyc);
+                } else {
+                    float progress = (tgt_cyc > 0)
+                                         ? (static_cast<float>(curr_cyc) /
+                                            static_cast<float>(tgt_cyc))
+                                         : 1.0f;
+                    if (progress > 1.0f)
+                        progress = 1.0f;
+
+                    char progress_label[32];
+                    snprintf(progress_label, sizeof(progress_label),
+                             "%d / %d Cycles", curr_cyc, tgt_cyc);
+
+                    ImGui::Text("Execution Phase: ");
+                    ImGui::SameLine();
+                    ImGui::ProgressBar(progress, ImVec2(-1.0f, 0.0f),
+                                       progress_label);
+                }
+            } else {
+                ImGui::TextDisabled("Execution Target: Dynamic duration");
+            }
+            ImGui::Separator();
+
             for (size_t i = 0; i < inst_def->microcode.size(); ++i) {
                 bool is_current = (i == executor.get_current_uop_index() &&
                                    (state == ExecutionState::EXECUTE_UOPS ||
@@ -286,10 +335,10 @@ void UI_MemoryView(CPU &cpu, GUIState &gui) {
             uint32_t addr = i + j;
             uint8_t val = mem.raw()[addr];
 
-            if (addr == pc)
+            if (addr == pc && !mem.is_harvard())
                 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0, 1, 0, 1));
             ImGui::Text("%02X", val);
-            if (addr == pc)
+            if (addr == pc && !mem.is_harvard())
                 ImGui::PopStyleColor();
 
             ImGui::SameLine();
@@ -318,7 +367,8 @@ void UI_ControlTower(CPU &cpu, GUIState &state, PeripheralsState &p_state) {
     }
 
     ImGui::SameLine();
-    if (ImGui::Button("STEP INST") && state.cpu_error_message == "")
+    if (ImGui::Button("STEP INST") && state.cpu_error_message == "" &&
+        !cpu.is_halted())
         try {
             cpu.step();
         } catch (const std::exception &e) {
@@ -327,7 +377,8 @@ void UI_ControlTower(CPU &cpu, GUIState &state, PeripheralsState &p_state) {
         }
 
     ImGui::SameLine();
-    if (ImGui::Button("STEP UOP") && state.cpu_error_message == "")
+    if (ImGui::Button("STEP UOP") && state.cpu_error_message == "" &&
+        !cpu.is_halted())
         try {
             cpu.step_uop();
         } catch (const std::exception &e) {
@@ -517,6 +568,7 @@ void UI_ProgramView(CPU &cpu) {
     uint32_t curr_addr = cpu.get_load_address();
     uint32_t end_addr = curr_addr + cpu.get_code().size();
     int unit_bits = config.data_width;
+    int unit_bytes = (config.data_width + 7) / 8;
 
     auto get_reg_name = [&](int idx) -> std::string {
         if (idx >= 0 && idx < config.registers.size())
@@ -525,7 +577,19 @@ void UI_ProgramView(CPU &cpu) {
     };
 
     while (curr_addr < end_addr) {
-        uint64_t first_unit = mem.read(curr_addr) & ((1ULL << unit_bits) - 1);
+        uint64_t first_unit = 0;
+        try {
+            first_unit = mem.read(curr_addr, true) & ((1ULL << unit_bits) - 1);
+        } catch (const std::exception &) {
+            try {
+                first_unit =
+                    mem.read(curr_addr, false) & ((1ULL << unit_bits) - 1);
+            } catch (const std::exception &) {
+                curr_addr += unit_bytes; // Scaled by unit bytes
+                continue;
+            }
+        }
+
         uint8_t opcode = decoder.peek_opcode(first_unit);
         int total_bits = decoder.get_total_bits(opcode);
         int units = (total_bits + unit_bits - 1) / unit_bits;
@@ -534,9 +598,21 @@ void UI_ProgramView(CPU &cpu) {
             units = 1;
 
         uint64_t raw = first_unit;
-        for (int i = 1; i < units && (curr_addr + i) < mem.size(); ++i) {
-            uint64_t next_unit =
-                mem.read(curr_addr + i) & ((1ULL << unit_bits) - 1);
+        // Loop checks and address lookups scaled by unit_bytes:
+        for (int i = 1; i < units && (curr_addr + i * unit_bytes) < mem.size();
+             ++i) {
+            uint64_t next_unit = 0;
+            try {
+                next_unit = mem.read(curr_addr + i * unit_bytes, true) &
+                            ((1ULL << unit_bits) - 1);
+            } catch (const std::exception &) {
+                try {
+                    next_unit = mem.read(curr_addr + i * unit_bytes, false) &
+                                ((1ULL << unit_bits) - 1);
+                } catch (const std::exception &) {
+                    next_unit = 0;
+                }
+            }
             raw = (raw << unit_bits) | next_unit;
         }
 
@@ -607,7 +683,8 @@ void UI_ProgramView(CPU &cpu) {
             ImGui::Text("   %04X: %s", curr_addr, asm_line.c_str());
         }
 
-        curr_addr += units;
+        curr_addr +=
+            units * unit_bytes; // Scaled address increments by unit_bytes
     }
 
     ImGui::End();
@@ -752,6 +829,60 @@ void UI_Peripherals(CPU &cpu, const Config &config, PeripheralsState &p_state) {
     ImGui::End();
 }
 
+void UI_FlashROMView(CPU &cpu, GUIState &gui) {
+    ImGui::Begin("Instruction ROM (Flash)");
+
+    auto &mem = cpu.get_memory();
+    if (!mem.is_harvard()) {
+        ImGui::TextWrapped("Von Neumann Architecture is Active.");
+        ImGui::TextDisabled("Instruction Memory is unified with Data RAM. "
+                            "Check the 'Memory Explorer' window.");
+        ImGui::End();
+        return;
+    }
+
+    ImGui::Checkbox("Show Full Address Space##flash", &gui.show_full_memory);
+    ImGui::Separator();
+
+    uint32_t pc = (uint32_t)cpu.get_registers().get_pc();
+    const auto &raw_rom = mem.raw_instruction();
+
+    ImGui::BeginChild("FlashScroll");
+
+    uint32_t display_limit = raw_rom.size();
+    if (!gui.show_full_memory && display_limit > 256) {
+        display_limit = 256;
+    }
+
+    for (uint32_t i = 0; i < display_limit; i += 8) {
+        ImGui::TextDisabled("%04X: ", i);
+        ImGui::SameLine();
+
+        for (uint32_t j = 0; j < 8 && (i + j) < display_limit; j++) {
+            uint32_t addr = i + j;
+            uint8_t val = raw_rom[addr];
+
+            if (addr == pc)
+                ImGui::PushStyleColor(ImGuiCol_Text,
+                                      ImVec4(0.2f, 1.0f, 0.2f, 1.0f));
+            ImGui::Text("%02X", val);
+            if (addr == pc)
+                ImGui::PopStyleColor();
+
+            ImGui::SameLine();
+        }
+        ImGui::NewLine();
+    }
+
+    if (!gui.show_full_memory && raw_rom.size() > 256) {
+        ImGui::TextDisabled("... (Use checkbox to see all %zu bytes) ...",
+                            raw_rom.size());
+    }
+
+    ImGui::EndChild();
+    ImGui::End();
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         std::cout << "Usage: cpu_sim <config.json>\n";
@@ -828,6 +959,7 @@ int main(int argc, char **argv) {
         UI_RegisterFile(cpu);
         UI_ALUMonitor(cpu);
         UI_MemoryView(cpu, gui);
+        UI_FlashROMView(cpu, gui);
         UI_MicrocodePipeline(cpu);
         UI_Assembler(cpu, gui, p_state);
         UI_ProgramView(cpu);

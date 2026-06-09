@@ -29,6 +29,9 @@ class RegisterFile {
 
     void reset();
 
+    uint64_t read_coproc(int cp_id, int reg_id) const;
+    void write_coproc(int cp_id, int reg_id, uint64_t value);
+
   private:
     std::vector<RegisterDef> defs_;
     std::vector<uint64_t> registers_;

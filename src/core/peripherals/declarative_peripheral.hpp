@@ -18,8 +18,8 @@ class DeclarativePeripheral {
 
     void reset();
     void tick();
-    uint64_t read(uint32_t offset);
-    void write(uint32_t offset, uint64_t value);
+    uint64_t read(uint64_t offset);
+    void write(uint64_t offset, uint64_t value);
 
     void set_host_print_hook(std::function<void(char)> hook) {
         host_print_ = hook;
@@ -35,8 +35,8 @@ class DeclarativePeripheral {
         return internal_vars_;
     }
 
-    uint32_t get_start_address() const { return def_.address_start; }
-    uint32_t get_end_address() const { return def_.address_end; }
+    uint64_t get_start_address() const { return def_.address_start; }
+    uint64_t get_end_address() const { return def_.address_end; }
 
   private:
     CPU &cpu_;
@@ -44,7 +44,7 @@ class DeclarativePeripheral {
 
     std::unordered_map<std::string, uint64_t> registers_;
     std::unordered_map<std::string, uint64_t> internal_vars_;
-    std::unordered_map<uint32_t, PeripheralRegisterDef> reg_map_;
+    std::unordered_map<uint64_t, PeripheralRegisterDef> reg_map_;
 
     std::function<void(char)> host_print_;
     std::function<char()> host_pop_;

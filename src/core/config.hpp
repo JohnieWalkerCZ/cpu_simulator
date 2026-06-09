@@ -17,6 +17,10 @@ struct RegisterDef {
     int absolute_bit_offset = 0;
 
     std::vector<int> bit_mapping;
+
+    bool is_coproc = false;
+    int coproc_id = -1;
+    int coproc_reg_id = -1;
 };
 
 struct ALUOp {
@@ -33,18 +37,27 @@ struct MicroOp {
     std::unordered_map<std::string, std::string> args;
 };
 
+enum class LatencyMode {
+    DYNAMIC,
+    BOTTLENECK,
+    STRICT,
+    ADDITIVE,
+};
+
 struct Instruction {
     std::string name;
     uint8_t opcode;
-    std::string format;
     std::vector<int> encoding;
     std::vector<MicroOp> microcode;
+    int execution_latency = -1;
+    LatencyMode latency_mode = LatencyMode::DYNAMIC;
 };
 
 struct FlagDef {
     std::string name;
     int bit;
     std::string type; // "zero", "carry", "overflow", "negative", etc.
+    std::string expression = "";
 };
 
 struct PeripheralRegisterDef {
@@ -60,8 +73,8 @@ struct PeripheralRegisterDef {
 struct PeripheralDef {
     std::string name;
     std::string type;
-    uint32_t address_start;
-    uint32_t address_end;
+    uint64_t address_start;
+    uint64_t address_end;
     std::unordered_map<std::string, std::string> parameters;
 
     std::vector<PeripheralRegisterDef> registers;
@@ -71,8 +84,8 @@ struct PeripheralDef {
 
 struct MemorySegmentDef {
     std::string name;
-    uint32_t start;
-    uint32_t end;
+    uint64_t start;
+    uint64_t end;
     bool r, w, x;
 };
 
@@ -81,6 +94,8 @@ struct Config {
     int data_width;
     int addr_width;
     int memory_size;
+    std::string endianness = "little";
+    std::string memory_architecture = "von_neumann";
 
     std::vector<RegisterDef> registers;
     std::vector<FlagDef> alu_flags;

@@ -127,9 +127,13 @@ DecodedInstruction Decoder::decode(uint64_t instruction_bits,
 uint64_t Decoder::extract_bits(uint64_t val, int start_bit, int width,
                                int total_bits) const {
     int shift = total_bits - start_bit - width;
-    if (shift < 0)
-        return val & ((1ULL << width) - 1);
+    uint64_t mask = (width >= 64) ? ~0ULL : (1ULL << width) - 1;
 
-    uint64_t mask = (1ULL << width) - 1;
+    if (shift < 0)
+        return val & mask;
+
+    if (shift >= 64)
+        return 0;
+
     return (val >> shift) & mask;
 }

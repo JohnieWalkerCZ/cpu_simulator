@@ -21,11 +21,12 @@ RegisterFile::RegisterFile(const Config &config)
     for (size_t i = 0; i < defs_.size(); ++i) {
         name_to_index_[defs_[i].name] = i;
 
-        if (defs_[i].role == "program_counter") {
+        if (defs_[i].role == "program_counter" || defs_[i].role == "pc") {
             pc_index_ = i;
-        } else if (defs_[i].role == "stack_pointer") {
+        } else if (defs_[i].role == "stack_pointer" || defs_[i].role == "sp") {
             sp_index_ = i;
-        } else if (defs_[i].role == "status_flags") {
+        } else if (defs_[i].role == "status_flags" ||
+                   defs_[i].role == "flags") {
             flags_index_ = i;
         }
     }
@@ -153,4 +154,24 @@ uint64_t RegisterFile::mask_value(uint64_t value, int width) const {
         return value;
     uint64_t mask = (1ULL << width) - 1;
     return mask & value;
+}
+
+uint64_t RegisterFile::read_coproc(int cp_id, int reg_id) const {
+    for (size_t i = 0; i < defs_.size(); ++i) {
+        if (defs_[i].is_coproc && defs_[i].coproc_id == cp_id &&
+            defs_[i].coproc_reg_id == reg_id) {
+            return read(i);
+        }
+    }
+    return 0;
+}
+
+void RegisterFile::write_coproc(int cp_id, int reg_id, uint64_t value) {
+    for (size_t i = 0; i < defs_.size(); ++i) {
+        if (defs_[i].is_coproc && defs_[i].coproc_id == cp_id &&
+            defs_[i].coproc_reg_id == reg_id) {
+            write(i, value);
+            return;
+        }
+    }
 }

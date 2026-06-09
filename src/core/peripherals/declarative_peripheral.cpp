@@ -233,7 +233,7 @@ void DeclarativePeripheral::tick() {
     }
 }
 
-uint64_t DeclarativePeripheral::read(uint32_t offset) {
+uint64_t DeclarativePeripheral::read(uint64_t offset) {
     if (reg_map_.count(offset)) {
         const auto &rdef = reg_map_[offset];
         if (rdef.access.find('r') != std::string::npos) {
@@ -246,7 +246,7 @@ uint64_t DeclarativePeripheral::read(uint32_t offset) {
     return 0;
 }
 
-void DeclarativePeripheral::write(uint32_t offset, uint64_t value) {
+void DeclarativePeripheral::write(uint64_t offset, uint64_t value) {
     if (reg_map_.count(offset)) {
         const auto &rdef = reg_map_[offset];
         if (rdef.access.find('w') != std::string::npos) {

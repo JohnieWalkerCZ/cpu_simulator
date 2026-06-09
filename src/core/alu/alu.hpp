@@ -1,5 +1,6 @@
 #pragma once
 #include "../config.hpp"
+#include <cstdint>
 #include <stack>
 #include <string>
 #include <unordered_map>
@@ -34,6 +35,7 @@ class ALU {
         OP_OR,
         OP_XOR,
         OP_NOT,
+        OP_LNOT,
         OP_SHL,
         OP_SHR
     };
@@ -55,4 +57,8 @@ class ALU {
     bool calc_negative(uint64_t res) { return (res & sign_bit_) != 0; }
     bool calc_carry_add(uint64_t a, uint64_t b) { return (a > mask_ - b); }
     bool calc_carry_sub(uint64_t a, uint64_t b) { return a < b; }
+
+    uint64_t evaluate_flag_expression(const std::string &expr, uint64_t a,
+                                      uint64_t b, uint64_t c, uint64_t res,
+                                      uint64_t max_val);
 };

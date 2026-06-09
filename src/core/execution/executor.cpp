@@ -1,5 +1,6 @@
 #include "executor.hpp"
 #include <cstdint>
+#include <filesystem>
 #include <iostream>
 #include <ostream>
 #include <stdexcept>
@@ -36,10 +37,12 @@ void Executor::reset() {
     halted_ = false;
     cycles_ = 0;
     current_uop_cycles_ = 0;
+    current_execution_cycles_ = 0;
     current_inst_ = DecodedInstruction();
 
     interrupt_pending_ = false;
     pending_interrupt_id_ = -1;
+    pc_modified_ = false;
 }
 
 void Executor::step_uop() {
@@ -55,6 +58,8 @@ void Executor::step_uop() {
         current_inst_ = DecodedInstruction();
 
         int unit_bits = config_.data_width;
+        int unit_bytes = (config_.data_width + 7) / 8;
+
         uint64_t first_unit = mem_.read(static_cast<uint32_t>(fetch_pc_), true);
         first_unit &= ((1ULL << unit_bits) - 1);
 
@@ -64,8 +69,8 @@ void Executor::step_uop() {
 
         uint64_t raw = first_unit;
         for (int i = 1; i < units_fetched_; ++i) {
-            uint64_t next_unit =
-                mem_.read(static_cast<uint32_t>(fetch_pc_ + i), true);
+            uint64_t next_unit = mem_.read(
+                static_cast<uint32_t>(fetch_pc_ + i * unit_bytes), true);
             next_unit &= ((1ULL << unit_bits) - 1);
             raw = (raw << unit_bits) | next_unit;
         }
@@ -74,7 +79,6 @@ void Executor::step_uop() {
         state_ = ExecutionState::DECODE;
         break;
     }
-
     case ExecutionState::DECODE: {
         int fetched_bits = units_fetched_ * config_.data_width;
 
@@ -91,61 +95,177 @@ void Executor::step_uop() {
 
         uop_index_ = 0;
         current_uop_cycles_ = 0;
+        current_execution_cycles_ = 0;
         state_ = ExecutionState::EXECUTE_UOPS;
         break;
     }
 
     case ExecutionState::EXECUTE_UOPS: {
         const auto &uops = microcode_map.at(current_inst_.opcode);
-        if (uop_index_ < uops.size()) {
-            const auto &uop = uops[uop_index_];
-            int latency = 1;
-            if (uop.action == "alu") {
-                std::string op_name = uop.args.at("op");
-                for (const auto &op : config_.alu_ops) {
-                    if (op.name == op_name) {
-                        latency = op.latency;
-                        break;
+        current_execution_cycles_++;
+
+        int target_latency = -1;
+        LatencyMode mode = LatencyMode::DYNAMIC;
+        for (const auto &inst : config_.instructions) {
+            if (inst.opcode == current_inst_.opcode) {
+                target_latency = inst.execution_latency;
+                mode = inst.latency_mode;
+                break;
+            }
+        }
+
+        // ==========================================================
+        // MODE A: STRICT (Fixed-Latency execution window)
+        // ==========================================================
+        if (mode == LatencyMode::STRICT) {
+            int cycles_left = target_latency - (current_execution_cycles_ - 1);
+
+            if (cycles_left <= 1) {
+                // Final clock cycle: execute all remaining operations
+                while (uop_index_ < uops.size()) {
+                    perform_uop(uops[uop_index_]);
+                    uop_index_++;
+                }
+                state_ = ExecutionState::DONE;
+            } else {
+                // Evenly distribute micro-operations
+                int uops_left = static_cast<int>(uops.size()) -
+                                static_cast<int>(uop_index_);
+                if (uops_left > 0) {
+                    int uops_to_run =
+                        (uops_left + cycles_left - 1) / cycles_left;
+                    for (int i = 0; i < uops_to_run && uop_index_ < uops.size();
+                         ++i) {
+                        perform_uop(uops[uop_index_]);
+                        uop_index_++;
                     }
                 }
             }
-
-            current_uop_cycles_++;
-
-            if (current_uop_cycles_ >= latency) {
-                perform_uop(uop);
-                uop_index_++;
-                current_uop_cycles_ = 0;
-            } else {
-                // Stalling...
+            if (current_execution_cycles_ >= target_latency) {
+                state_ = ExecutionState::DONE;
             }
         }
-        if (uop_index_ >= uops.size()) {
-            state_ = ExecutionState::DONE;
+
+        // ==========================================================
+        // MODE B: BOTTLENECK / MAX (Stalls if micro-ops finish early)
+        // ==========================================================
+        else if (mode == LatencyMode::BOTTLENECK) {
+            if (uop_index_ < uops.size()) {
+                const auto &uop = uops[uop_index_];
+                int uop_latency = 1;
+                if (uop.action == "alu") {
+                    std::string op_name = uop.args.at("op");
+                    for (const auto &op : config_.alu_ops) {
+                        if (op.name == op_name) {
+                            uop_latency = op.latency;
+                            break;
+                        }
+                    }
+                }
+
+                current_uop_cycles_++;
+
+                if (current_uop_cycles_ >= uop_latency) {
+                    perform_uop(uop);
+                    uop_index_++;
+                    current_uop_cycles_ = 0;
+                }
+            }
+
+            bool uops_finished = (uop_index_ >= uops.size());
+            bool latency_met = (current_execution_cycles_ >= target_latency);
+
+            if (uops_finished && latency_met) {
+                state_ = ExecutionState::DONE;
+            }
+        }
+
+        // ==========================================================
+        // MODE C: ADDITIVE (Dynamic Micro-op Timing + Static Overhead)
+        // ==========================================================
+        else if (mode == LatencyMode::ADDITIVE) {
+            if (uop_index_ < uops.size()) {
+                const auto &uop = uops[uop_index_];
+                int uop_latency = 1;
+                if (uop.action == "alu") {
+                    std::string op_name = uop.args.at("op");
+                    for (const auto &op : config_.alu_ops) {
+                        if (op.name == op_name) {
+                            uop_latency = op.latency;
+                            break;
+                        }
+                    }
+                }
+
+                current_uop_cycles_++;
+
+                if (current_uop_cycles_ >= uop_latency) {
+                    perform_uop(uop);
+                    uop_index_++;
+                    current_uop_cycles_ = 0;
+                }
+            } else {
+                current_uop_cycles_++;
+                if (current_uop_cycles_ >= target_latency) {
+                    state_ = ExecutionState::DONE;
+                }
+            }
+        }
+
+        // ==========================================================
+        // MODE D: DYNAMIC (Standard Fallback, Omitted Latency)
+        // ==========================================================
+        else {
+            if (uop_index_ < uops.size()) {
+                const auto &uop = uops[uop_index_];
+                int uop_latency = 1;
+                if (uop.action == "alu") {
+                    std::string op_name = uop.args.at("op");
+                    for (const auto &op : config_.alu_ops) {
+                        if (op.name == op_name) {
+                            uop_latency = op.latency;
+                            break;
+                        }
+                    }
+                }
+
+                current_uop_cycles_++;
+
+                if (current_uop_cycles_ >= uop_latency) {
+                    perform_uop(uop);
+                    uop_index_++;
+                    current_uop_cycles_ = 0;
+                }
+            }
+            if (uop_index_ >= uops.size()) {
+                state_ = ExecutionState::DONE;
+            }
         }
         break;
     }
 
     case ExecutionState::DONE: {
-        if (regs_.get_pc() == fetch_pc_) {
-            regs_.increment_pc(units_fetched_);
+        if (regs_.get_pc() == fetch_pc_ && !pc_modified_) {
+            int unit_bytes = (config_.data_width + 7) / 8;
+            regs_.increment_pc(units_fetched_ * unit_bytes);
         }
 
         if (interrupt_pending_) {
-            uint64_t current_sp = regs_.read(sp_idx_);
-            int addr_bytes = (config_.addr_width + 7) / 8;
-            uint64_t new_sp = current_sp - addr_bytes;
-            regs_.set_sp(new_sp);
+            if (sp_idx_ != -1) {
+                uint64_t current_sp = regs_.read(sp_idx_);
+                int addr_bytes = (config_.addr_width + 7) / 8;
+                uint64_t new_sp = current_sp - addr_bytes;
+                regs_.set_sp(new_sp);
 
-            uint64_t pc_val = regs_.get_pc();
-            for (int i = 0; i < addr_bytes; ++i) {
-                uint8_t byte_val = (pc_val >> (i * 8)) & 0xFF;
-                mem_.write(static_cast<uint32_t>(new_sp + i), byte_val);
+                mem_.write(static_cast<uint32_t>(new_sp), regs_.get_pc(),
+                           config_.addr_width);
             }
 
             regs_.set_pc(pending_interrupt_id_);
             interrupt_pending_ = false;
         }
+
+        pc_modified_ = false;
 
         state_ = ExecutionState::FETCH;
         break;
@@ -157,6 +277,7 @@ void Executor::perform_uop(const MicroOp &uop) {
     if (uop.action == "copy") {
         uint64_t val = resolve_operand(uop.args.at("source"));
         write_operand(uop.args.at("dest"), val);
+
     } else if (uop.action == "alu") {
         uint64_t a = resolve_operand(uop.args.at("a"));
         uint64_t b =
@@ -173,29 +294,42 @@ void Executor::perform_uop(const MicroOp &uop) {
             if (flags_idx_ != -1)
                 regs_.write(flags_idx_, res.flags_register);
         }
+
     } else if (uop.action == "mem_read") {
         uint64_t addr = resolve_operand(uop.args.at("addr"));
         int width = get_operand_width(uop.args.at("out"));
-        int bytes = (width + 7) / 8;
-
-        uint64_t val = 0;
-        for (int i = 0; i < bytes; ++i) {
-            uint64_t byte_val =
-                mem_.read(static_cast<uint32_t>(addr + i)) & 0xFF;
-            val |= (byte_val << (i * 8));
-        }
+        uint64_t val = mem_.read(static_cast<uint32_t>(addr), false, width);
         write_operand(uop.args.at("out"), val);
 
     } else if (uop.action == "mem_write") {
         uint64_t addr = resolve_operand(uop.args.at("addr"));
         uint64_t data = resolve_operand(uop.args.at("data"));
         int width = get_operand_width(uop.args.at("data"));
-        int bytes = (width + 7) / 8;
+        mem_.write(static_cast<uint32_t>(addr), data, width);
 
-        for (int i = 0; i < bytes; ++i) {
-            uint8_t byte_val = (data >> (i * 8)) & 0xFF;
-            mem_.write(static_cast<uint32_t>(addr + i), byte_val);
-        }
+    } else if (uop.action == "port_read") {
+        uint64_t port = resolve_operand(uop.args.at("port"));
+        int width = get_operand_width(uop.args.at("out"));
+        uint64_t val = mem_.port_read(static_cast<uint32_t>(port));
+        write_operand(uop.args.at("out"), val);
+
+    } else if (uop.action == "port_write") {
+        uint64_t port = resolve_operand(uop.args.at("port"));
+        uint64_t data = resolve_operand(uop.args.at("data"));
+        mem_.port_write(static_cast<uint32_t>(port), data);
+
+    } else if (uop.action == "coproc_read") {
+        int cp_id = static_cast<int>(resolve_operand(uop.args.at("cp")));
+        int reg_id = static_cast<int>(resolve_operand(uop.args.at("reg")));
+        uint64_t val = regs_.read_coproc(cp_id, reg_id);
+        write_operand(uop.args.at("out"), val);
+
+    } else if (uop.action == "coproc_write") {
+        int cp_id = static_cast<int>(resolve_operand(uop.args.at("cp")));
+        int reg_id = static_cast<int>(resolve_operand(uop.args.at("reg")));
+        uint64_t data = resolve_operand(uop.args.at("data"));
+        regs_.write_coproc(cp_id, reg_id, data);
+
     } else if (uop.action == "branch") {
         bool cond = true;
         if (uop.args.count("condition")) {
@@ -243,18 +377,16 @@ void Executor::perform_uop(const MicroOp &uop) {
             uint64_t target = resolve_operand(uop.args.at("target"));
             if (uop.args.count("relative") &&
                 uop.args.at("relative") == "true") {
-                // Perform sign extension for relative jumps if target is an
-                // immediate
                 regs_.set_pc(regs_.get_pc() + target);
             } else {
                 regs_.set_pc(target);
             }
+            pc_modified_ = true;
         }
     } else if (uop.action == "halt") {
         halted_ = true;
     }
 }
-
 uint64_t Executor::resolve_operand(const std::string &arg) {
     if (arg.empty())
         return 0;
@@ -275,11 +407,13 @@ uint64_t Executor::resolve_operand(const std::string &arg) {
         if (reg == "PC")
             return regs_.get_pc();
         if (reg == "SP")
-            return regs_.read(sp_idx_);
+            return (sp_idx_ != -1) ? regs_.read(sp_idx_) : 0;
         if (reg == "FLAGS")
-            return regs_.read(flags_idx_);
-        if (reg == "NEXT_PC")
-            return regs_.get_pc() + units_fetched_;
+            return (flags_idx_ != -1) ? regs_.read(flags_idx_) : 0;
+        if (reg == "NEXT_PC") {
+            int unit_bytes = (config_.data_width + 7) / 8;
+            return regs_.get_pc() + units_fetched_ * unit_bytes;
+        }
         return regs_.read(reg);
     }
 
@@ -306,9 +440,10 @@ void Executor::write_operand(const std::string &arg, uint64_t value) {
             regs_.write(current_inst_.regs.at(token), value);
     } else if (arg[0] == '$') {
         std::string reg = arg.substr(1);
-        if (reg == "PC")
+        if (reg == "PC") {
             regs_.set_pc(value);
-        else if (reg == "SP")
+            pc_modified_ = true;
+        } else if (reg == "SP")
             regs_.write(sp_idx_, value);
         else if (reg == "FLAGS")
             regs_.write(flags_idx_, value);

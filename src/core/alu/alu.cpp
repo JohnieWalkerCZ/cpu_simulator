@@ -1,5 +1,8 @@
 #include "alu.hpp"
+#include <cstdint>
+#include <iostream>
 #include <map>
+#include <regex>
 #include <sstream>
 #include <stdexcept>
 
@@ -30,7 +33,8 @@ std::vector<ALU::Token> ALU::tokenize(const std::string &expr) {
 
         if (isdigit(ch)) {
             std::string s;
-            while (i < expr.length() && (isdigit(expr[i]) || expr[i] == 'x'))
+            while (i < expr.length() &&
+                   (isxdigit(expr[i]) || expr[i] == 'x' || expr[i] == 'X'))
                 s += expr[i++];
             i--;
             tokens.push_back({TokenType::LITERAL, std::stoull(s, nullptr, 0)});
@@ -49,7 +53,9 @@ std::vector<ALU::Token> ALU::tokenize(const std::string &expr) {
                 tokens.push_back({TokenType::OP_SUB});
             else if (ch == '*')
                 tokens.push_back({TokenType::OP_MUL});
-            else if (ch == '&')
+            else if (ch == '/') {
+                tokens.push_back({TokenType::OP_DIV});
+            } else if (ch == '&')
                 tokens.push_back({TokenType::OP_AND});
             else if (ch == '|')
                 tokens.push_back({TokenType::OP_OR});
@@ -57,6 +63,8 @@ std::vector<ALU::Token> ALU::tokenize(const std::string &expr) {
                 tokens.push_back({TokenType::OP_XOR});
             else if (ch == '~')
                 tokens.push_back({TokenType::OP_NOT});
+            else if (ch == '!')
+                tokens.push_back({TokenType::OP_LNOT});
             else if (ch == '<' && expr[i + 1] == '<') {
                 tokens.push_back({TokenType::OP_SHL});
                 i++;
@@ -75,7 +83,7 @@ std::vector<ALU::Token> ALU::shunting_yard(const std::vector<Token> &tokens) {
     std::stack<Token> ops;
 
     auto precedence = [](TokenType t) {
-        if (t == TokenType::OP_NOT)
+        if (t == TokenType::OP_NOT || t == TokenType::OP_LNOT)
             return 4;
         if (t == TokenType::OP_MUL || t == TokenType::OP_DIV)
             return 3;
@@ -131,6 +139,10 @@ uint64_t ALU::evaluate_rpn(const std::vector<Token> &rpn, uint64_t a,
             uint64_t v = s.top();
             s.pop();
             s.push(~v);
+        } else if (t.type == TokenType::OP_LNOT) {
+            uint64_t v = s.top();
+            s.pop();
+            s.push(!v ? 1 : 0);
         } else {
             uint64_t right = s.top();
             s.pop();
@@ -145,6 +157,9 @@ uint64_t ALU::evaluate_rpn(const std::vector<Token> &rpn, uint64_t a,
                 break;
             case TokenType::OP_MUL:
                 s.push(left * right);
+                break;
+            case TokenType::OP_DIV:
+                s.push(right != 0 ? left / right : 0);
                 break;
             case TokenType::OP_AND:
                 s.push(left & right);
@@ -194,11 +209,12 @@ ALU::FullResult ALU::execute(const std::string &op_name, uint64_t a, uint64_t b,
     uint64_t flags_out = 0;
 
     for (const auto &[flag_name, logic_type] : op_def->flag_rules) {
-
         int bit_pos = -1;
+        std::string expr = "";
         for (const auto &f_def : config_.alu_flags) {
             if (f_def.name == flag_name) {
                 bit_pos = f_def.bit;
+                expr = f_def.expression;
                 break;
             }
         }
@@ -206,37 +222,48 @@ ALU::FullResult ALU::execute(const std::string &op_name, uint64_t a, uint64_t b,
             continue;
 
         bool flag_val = false;
-
-        if (logic_type == "result_zero") {
-            flag_val = (final_res == 0);
-        } else if (logic_type == "result_negative") {
-            flag_val = (final_res & op_sign_bit) != 0;
-        } else if (logic_type == "carry_add") {
-            flag_val = (a > op_mask - b);
-        } else if (logic_type == "carry_sub") {
-            flag_val = (a < b);
-        } else if (logic_type == "overflow_add") {
-            // Logic: (a,b same sign) AND (res different sign)
-            flag_val =
-                !((a ^ b) & op_sign_bit) && ((a ^ final_res) & op_sign_bit);
-        } else if (logic_type == "overflow_sub") {
-            // Logic: (a,b different sign) AND (res different sign than a)
-            flag_val =
-                ((a ^ b) & op_sign_bit) && ((a ^ final_res) & op_sign_bit);
-        } else if (logic_type == "parity") {
-            int count = 0;
-            uint64_t temp = final_res;
-            while (temp) {
-                count += (temp & 1);
-                temp >>= 1;
+        if (!expr.empty()) {
+            flag_val = (evaluate_flag_expression(expr, a, b, c, final_res,
+                                                 op_mask) != 0);
+        } else {
+            if (logic_type == "result_zero") {
+                flag_val = (final_res == 0);
+            } else if (logic_type == "result_negative") {
+                flag_val = (final_res & op_sign_bit) != 0;
+            } else if (logic_type == "carry_add") {
+                flag_val = calc_carry_add(a, b);
+            } else if (logic_type == "carry_sub") {
+                flag_val = calc_carry_sub(a, b);
+            } else if (logic_type == "overflow_add") {
+                flag_val =
+                    ((a ^ final_res) & (b ^ final_res) & op_sign_bit) != 0;
+            } else if (logic_type == "overflow_sub") {
+                flag_val = ((a ^ b) & (a ^ final_res) & op_sign_bit) != 0;
             }
-            flag_val = (count % 2 == 0);
         }
 
-        if (flag_val) {
+        if (flag_val)
             flags_out |= (1ULL << bit_pos);
-        }
     }
 
     return {final_res, flags_out};
+}
+
+uint64_t ALU::evaluate_flag_expression(const std::string &expr, uint64_t a,
+                                       uint64_t b, uint64_t c, uint64_t res,
+                                       uint64_t max_val) {
+    std::string processed = expr;
+
+    auto replace_word = [&](const std::string &word, uint64_t val) {
+        std::regex re("\\b" + word + "\\b");
+        processed = std::regex_replace(processed, re, std::to_string(val));
+    };
+
+    replace_word("max_val", max_val);
+    replace_word("res", res);
+    replace_word("a", a);
+    replace_word("b", b);
+    replace_word("c", c);
+
+    return evaluate_rpn(shunting_yard(tokenize(processed)), a, b, c);
 }

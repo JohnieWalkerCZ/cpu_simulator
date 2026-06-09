@@ -25,6 +25,9 @@ class Executor {
         interrupt_pending_ = true;
         pending_interrupt_id_ = interrupt_id;
     }
+    int get_current_execution_cycles() const {
+        return current_execution_cycles_;
+    };
 
   private:
     Config &config_;
@@ -49,6 +52,8 @@ class Executor {
     int current_uop_cycles_ = 0;
     bool interrupt_pending_ = false;
     int pending_interrupt_id_ = -1;
+    bool pc_modified_ = false;
+    int current_execution_cycles_ = 0;
 
     void perform_uop(const MicroOp &uop);
     uint64_t resolve_operand(const std::string &arg);

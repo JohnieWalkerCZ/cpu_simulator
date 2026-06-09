@@ -72,37 +72,59 @@ add_executable(cpu_sim
 )
 target_link_libraries(cpu_sim cpu_core imgui SDL2::SDL2 ${OPENGL_LIBRARIES} dl)
 
+enable_testing()
+
+set(TEST_WORKING_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+
+# 1. Config Parser Test
 add_executable(test_config_parser
     tests/test_config_parser.cpp
 )
 target_link_libraries(test_config_parser PRIVATE cpu_core)
+add_test(NAME test_config_parser COMMAND test_config_parser)
 
+# 2. ALU Operations Test
 add_executable(test_alu_operations
     tests/test_alu_operations.cpp
 )
 target_link_libraries(test_alu_operations PRIVATE cpu_core)
+add_test(NAME test_alu_operations COMMAND test_alu_operations)
+set_tests_properties(test_alu_operations PROPERTIES WORKING_DIRECTORY "${TEST_WORKING_DIR}")
 
+# 3. Register File Test
 add_executable(test_register_file
     tests/test_register_file.cpp
 )
 target_link_libraries(test_register_file PRIVATE cpu_core)
+add_test(NAME test_register_file COMMAND test_register_file)
 
+# 4. Memory Protection Test
 add_executable(test_memory
     tests/test_memory.cpp
 )
 target_link_libraries(test_memory PRIVATE cpu_core)
+add_test(NAME test_memory COMMAND test_memory)
 
+# 5. Instruction Decoder Test
 add_executable(test_decoder
     tests/test_decoder.cpp
 )
 target_link_libraries(test_decoder PRIVATE cpu_core)
+add_test(NAME test_decoder COMMAND test_decoder)
+set_tests_properties(test_decoder PROPERTIES WORKING_DIRECTORY "${TEST_WORKING_DIR}")
 
+# 6. Assembler Test
 add_executable(test_assembler
     tests/test_assembler.cpp
 )
 target_link_libraries(test_assembler PRIVATE cpu_core)
+add_test(NAME test_assembler COMMAND test_assembler)
+set_tests_properties(test_assembler PROPERTIES WORKING_DIRECTORY "${TEST_WORKING_DIR}")
 
+# 7. CPU Integration Test
 add_executable(test_cpu_integration
     tests/test_cpu_integration.cpp
 )
 target_link_libraries(test_cpu_integration PRIVATE cpu_core)
+add_test(NAME test_cpu_integration COMMAND test_cpu_integration)
+set_tests_properties(test_cpu_integration PROPERTIES WORKING_DIRECTORY "${TEST_WORKING_DIR}")

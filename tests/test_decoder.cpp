@@ -10,6 +10,17 @@ int main() {
         // Load config
         auto cfg = Config::from_file("../configs/8bit.json");
 
+        // Remove R3 to make the register count 15 (not a power of 2).
+        // This ensures a 4-bit register field can decode an invalid index of 15
+        // (>= 15), which would otherwise be impossible with 16 registers since
+        // 4 bits cannot exceed 15.
+        for (auto it = cfg.registers.begin(); it != cfg.registers.end(); ++it) {
+            if (it->name == "R3") {
+                cfg.registers.erase(it);
+                break;
+            }
+        }
+
         // Initialize Decoder & Assembler
         Decoder decoder(cfg);
         Assembler assembler(cfg);
