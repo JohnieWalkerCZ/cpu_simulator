@@ -1,0 +1,154 @@
+flowchart TD
+    %% Styling Configuration
+    classDef configStyle fill:#eceff1,stroke:#37474f,stroke-width:2px;
+    classDef stateStyle fill:#fff9c4,stroke:#fbc02d,stroke-width:2px;
+    classDef processStyle fill:#e1f5fe,stroke:#01579b,stroke-width:2px;
+    classDef peripheralStyle fill:#f3e5f5,stroke:#4a148c,stroke-width:2px;
+    classDef memoryStyle fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
+    classDef errorStyle fill:#ffebee,stroke:#c62828,stroke-width:2px;
+
+    %% --- CONFIGURATION & SUBSYSTEM INITIALIZATION ---
+    subgraph Subsystem_Init ["1. SYSTEM INITIALIZATION & CORE STRUCTURES"]
+        JSON[(8bit.json / tiny4.json)] -->|Parsed by Config::from_json| Config[Config Object]:::configStyle
+        
+        Config -->|Build Physical & Alias Slices| Regs[(Register File)]:::stateStyle
+        Config -->|Define flat or segmented boundaries| Mem[(Memory System)]:::memoryStyle
+        Config -->|Set up compiled AST behavior| Periphs[Declarative Peripherals]:::peripheralStyle
+        Config -->|Pre-compile operations via Shunting-Yard| ALU_Comp[ALU Evaluator]:::processStyle
+    end
+
+    %% --- ARCHITECTURAL RUNTIME SYSTEM ---
+    subgraph Core_Subsystems ["2. HARDWARE RUNTIME MAPPINGS"]
+        direction LR
+        %% Register Internals
+        subgraph Register_File ["Register File (register_file.cpp)"]
+            PC[PC Register]
+            SP[SP Register]
+            FLAGS[Status Flags Register]
+            GP[GP Registers: R0-R3]
+            SubRegs[Aliases / Slices: R0H, R0L, R0_even]
+        end
+
+        %% Memory Internals
+        subgraph Memory_Space ["Memory Space (memory.cpp)"]
+            ROM_Seg[ROM Segment\nR, X, !W]
+            RAM_Seg[RAM Segment\nR, W, !X]
+            STACK_Seg[STACK Segment\nR, W, !X]
+            MMIO_Ports[Memory-Mapped I/O Regions\n0x0080 - 0x00AB]
+        end
+
+        %% ALU Internals
+        subgraph ALU_Parser ["ALU Engine (alu.cpp)"]
+            Tokens[Tokenizer\nSupports Hex 'A-F'] --> RPN[RPN Evaluator\nSupports +,-,*,/,~,!]
+        end
+    end
+
+    %% --- CYCLE EXECUTION STEP ENGINE ---
+    subgraph Execution_Loop ["3. CPU HEARTBEAT ENGINE (cpu.cpp / main.cpp)"]
+        CPU_Step([CPU::step]) --> Step_Loop[CPU::step_uop loop]:::processStyle
+        Step_Loop --> Exec_Step[Executor::step_uop]:::processStyle
+        Exec_Step --> Periph_Tick[DeclarativePeripheral::tick]:::peripheralStyle
+        Periph_Tick --> Loop_Check{Executor State == FETCH\nOR CPU Halted?}:::decision
+        Loop_Check -->|No| Step_Loop
+        Loop_Check -->|Yes| CPU_Step_Exit([Exit CPU::step])
+    end
+
+    %% --- MICROCODE PIPELINE ---
+    subgraph Microcode_Pipeline ["4. PIPELINE STATE MACHINE (executor.cpp)"]
+        Exec_Step --> Pipeline_Switch{switch state_}:::decision
+
+        %% FETCH STATE
+        Pipeline_Switch -->|FETCH| S_Fetch[FETCH]:::stateStyle
+        S_Fetch --> F1[Capture fetch_pc_ = regs.get_pc]:::processStyle
+        F1 --> F2[Read Opcode & Calculate Instruction Byte Count]:::processStyle
+        F2 --> F3[Load Raw Bits into current_inst_]:::processStyle
+        F3 --> F_Next[Set state_ = DECODE]:::processStyle
+        F_Next --> Exec_Step_Exit
+
+        %% DECODE STATE
+        Pipeline_Switch -->|DECODE| S_Decode[DECODE]:::stateStyle
+        S_Decode --> D1[Decode registers and immediate fields]:::processStyle
+        D1 --> Reg_Check{Are register indices valid?}:::decision
+        Reg_Check -->|No| Dec_Error[Throw Decode Error Exception]:::errorStyle
+        Reg_Check -->|Yes| D2[Set uop_index_ = 0, state_ = EXECUTE_UOPS]:::processStyle
+        D2 --> Exec_Step_Exit
+
+        %% EXECUTE STATE
+        Pipeline_Switch -->|EXECUTE_UOPS| S_Exec[EXECUTE_UOPS]:::stateStyle
+        S_Exec --> E_Mode{Check latency_mode}:::decision
+        
+        %% STRICT Path
+        E_Mode -->|STRICT| Strict_Check{cycles_left <= 1?}:::decision
+        Strict_Check -->|Yes| Strict_Batch[Execute all remaining uops in 1 cycle]:::processStyle
+        Strict_Check -->|No| Strict_Spread[Execute dynamic ceiling batch]:::processStyle
+        Strict_Batch & Strict_Spread --> Strict_End{current_execution_cycles >= target_latency?}:::decision
+        Strict_End -->|Yes| E_Next[Set state_ = DONE]:::processStyle
+        Strict_End -->|No| Exec_Step_Exit
+
+        %% BOTTLENECK / ADDITIVE / DYNAMIC Paths
+        E_Mode -->|BOTTLENECK / ADDITIVE / DYNAMIC| Exec_Check{uop_index_ < uops.size?}:::decision
+        Exec_Check -->|No| Latency_Met_Check{Is target latency met?}:::decision
+        Latency_Met_Check -->|Yes| E_Next
+        Latency_Met_Check -->|No| Stall_Cycle[Increment cycles_ / Stall Pipeline]:::processStyle
+        
+        Exec_Check -->|Yes| E_Read[Read uop.action]:::processStyle
+        E_Read --> Latency_Stall{current_uop_cycles_ >= uop_latency?}:::decision
+        Latency_Stall -->|No| Stall_Cycle
+        Latency_Stall -->|Yes| E_Perf[perform_uop]:::processStyle
+        E_Perf --> E_Inc[uop_index_++, reset uop cycles]:::processStyle
+        E_Inc --> Exec_Step_Exit
+        Stall_Cycle --> Exec_Step_Exit
+        E_Next --> Exec_Step_Exit
+
+        %% DONE STATE
+        Pipeline_Switch -->|DONE| S_Done[DONE]:::stateStyle
+        S_Done --> Auto_Inc_Check{PC == fetch_pc_ && !pc_modified_?}:::decision
+        Auto_Inc_Check -->|True| Inc_PC[Increment PC by units_fetched_ * unit_bytes]:::processStyle
+        Auto_Inc_Check -->|False| Done_Intr_Check{interrupt_pending_?}:::decision
+        Inc_PC --> Done_Intr_Check
+
+        Done_Intr_Check -->|True| Intr_Proc[Process Interrupt:\nDecrement SP, Push PC to Stack,\nPC = pending_interrupt_id_,\ninterrupt_pending_ = false]:::processStyle
+        Done_Intr_Check -->|False| Clear_Mod[Reset pc_modified_ = false]:::processStyle
+        Intr_Proc --> Clear_Mod
+
+        Clear_Mod --> S_Done_Next[Set state_ = FETCH]:::processStyle
+        S_Done_Next --> Exec_Step_Exit
+    end
+
+    %% --- PERFORM MICROCODE ACTIONS ---
+    subgraph Perform_Actions ["5. MICRO-OP ACTIONS ENGINE"]
+        E_Perf --> Action_Type{uop.action}:::decision
+
+        %% Actions
+        Action_Type -->|copy| Act_Copy[copy: resolve source, write to dest]:::processStyle
+        Action_Type -->|alu| Act_ALU[alu: Execute ALU operation, write out]:::processStyle
+        Action_Type -->|mem_read| Act_MRead[mem_read: Read address, write out]:::processStyle
+        Action_Type -->|mem_write| Act_MWrite[mem_write: Write data to address]:::processStyle
+        Action_Type -->|branch| Act_Branch[branch: Evaluate condition, set PC target,\nset pc_modified_ = true]:::processStyle
+        Action_Type -->|halt| Act_Halt[halt: set halted_ = true]:::processStyle
+        Action_Type -->|coproc/port| Act_IO[coproc/port read or write]:::processStyle
+    end
+
+    %% --- PERIPHERALS SUBSYSTEM ---
+    subgraph MMIO_Peripherals ["6. MEMORY-MAPPED I/O & PERIPHERAL ENGINE"]
+        Act_MWrite -->|Address match in MMIO_Ports| Periph_Write[Trigger Peripheral write offset]:::peripheralStyle
+        Act_MRead -->|Address match in MMIO_Ports| Periph_Read[Trigger Peripheral read offset]:::peripheralStyle
+
+        Periph_Write --> AST_Write[Execute AST on_write]:::peripheralStyle
+        Periph_Read --> AST_Read[Execute AST on_read]:::peripheralStyle
+
+        Periph_Tick --> AST_Tick[Execute AST tick_behavior]:::peripheralStyle
+
+        AST_Write & AST_Read & AST_Tick --> AST_Eval{AST action node}:::decision
+        AST_Eval -->|assign| AST_Assign[Assign to internal var / MMIO register]:::peripheralStyle
+        AST_Eval -->|call host_print| AST_Print[Print character to terminal console]:::peripheralStyle
+        AST_Eval -->|call trigger_interrupt| AST_Intr[Set interrupt_pending_ = true\npending_interrupt_id_ = id]:::peripheralStyle
+    end
+
+    %% --- EXTERNAL DATA CONNECTIONS ---
+    Act_Copy & Act_ALU & Act_MRead & Act_MWrite & Act_Branch & Act_IO & Act_Halt --> E_Inc
+    AST_Intr -->|Vectored Line| Done_Intr_Check
+    Act_ALU -->|Evaluate RPN expression| ALU_Parser
+    Act_MRead & Act_MWrite -->|Segment permission validation| Memory_Space
+    Act_Copy & Act_ALU & Act_MRead & Act_Branch & Act_IO -->|Register lookup/write| Register_File
+    Exec_Step_Exit([Exit Executor::step_uop]) --> Periph_Tick

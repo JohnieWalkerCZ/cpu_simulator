@@ -1,0 +1,37 @@
+flowchart TD
+    %% Styling
+    classDef lookup fill:#e1f5fe,stroke:#01579b,stroke-width:1px;
+    classDef execute fill:#fff3e0,stroke:#e65100,stroke-width:1px;
+    classDef store fill:#f3e5f5,stroke:#4a148c,stroke-width:1px;
+
+    UopEntry([Micro-Op Evaluation]) --> ActionSwitch{uop.action}
+
+    %% ALU
+    ActionSwitch -->|alu| ALU_Action[alu]:::execute
+    ALU_Action --> ALU_1[Resolve inputs: a, b, c]:::lookup
+    ALU_1 --> ALU_2[Execute expression through Shunting-Yard Evaluator]:::execute
+    ALU_2 --> ALU_3[Apply data_width mask & determine flags]:::execute
+    ALU_3 --> ALU_Write[Write result value to destination operand]:::store
+    ALU_3 -->|update_flags == true| ALU_Flags[Write flags to $FLAGS register]:::store
+
+    %% Branch
+    ActionSwitch -->|branch| Branch_Action[branch]:::execute
+    Branch_Action --> Br_1{Check Branch Condition}:::lookup
+    Br_1 -->|Z, C, V, N, P, or !inverts| Br_2{Condition Met?}:::execute
+    Br_2 -->|Yes| Br_Write[Set PC target & set pc_modified_ = true]:::store
+    Br_2 -->|No| Br_Nop[Proceed without modifying PC]:::execute
+
+    %% Mem Read/Write
+    ActionSwitch -->|mem_read| MRead[mem_read]:::execute
+    MRead --> MR_1[Resolve address operand]:::lookup
+    MR_1 --> MR_2[Check segment protection R/X]:::execute
+    MR_2 -->|Success| MR_Write[Load value into destination register]:::store
+
+    ActionSwitch -->|mem_write| MWrite[mem_write]:::execute
+    MWrite --> MW_1[Resolve address and data operands]:::lookup
+    MW_1 --> MW_2[Check segment protection W]:::execute
+    MW_2 -->|Success| MW_Write[Write data to target memory address]:::store
+
+    %% Peripheral Mappings
+    MW_Write -->|MMIO Range Match| MMIO_Hook[Trigger Declarative Peripheral MMIO on_write AST]:::execute
+    MR_2 -->|MMIO Range Match| MMIO_Hook_R[Trigger Declarative Peripheral MMIO on_read AST]:::execute

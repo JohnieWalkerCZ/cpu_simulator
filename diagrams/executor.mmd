@@ -1,0 +1,69 @@
+flowchart TD
+    %% Styling
+    classDef state fill:#f3e5f5,stroke:#4a148c,stroke-width:2px;
+    classDef process fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
+    classDef decision fill:#ffe0b2,stroke:#e65100,stroke-width:2px;
+    classDef terminal fill:#ffebee,stroke:#c62828,stroke-width:2px;
+
+    %% Entry
+    Start([Start step_uop]) --> HaltedCheck{CPU Halted?}:::decision
+    HaltedCheck -->|Yes| End([Exit step_uop]):::terminal
+    HaltedCheck -->|No| StateSwitch{switch state_}:::decision
+
+    %% FETCH state
+    StateSwitch -->|FETCH| State_FETCH[ExecutionState::FETCH]:::state
+    State_FETCH --> F1[Capture fetch_pc_ = regs.get_pc]:::process
+    F1 --> F2[Read Opcode & calculate total instruction size]:::process
+    F2 --> F3[Load raw bits into current_inst_]:::process
+    F3 --> F4[Transition state_ = DECODE]:::process
+    F4 --> End
+
+    %% DECODE state
+    StateSwitch -->|DECODE| State_DECODE[ExecutionState::DECODE]:::state
+    State_DECODE --> D1[Decoder::decode raw bits using layout maps]:::process
+    D1 --> D2[Map registers and immediate bitfields]:::process
+    D2 --> RegOOB{Invalid register index?}:::decision
+    RegOOB -->|Yes| RaiseError[Throw Decode Error Exception]:::terminal
+    RegOOB -->|No| D3[Set uop_index_ = 0, state_ = EXECUTE_UOPS]:::process
+    D3 --> End
+
+    %% EXECUTE_UOPS state
+    StateSwitch -->|EXECUTE_UOPS| State_EXEC[ExecutionState::EXECUTE_UOPS]:::state
+    State_EXEC --> E_Mode{Check latency_mode}:::decision
+    
+    %% STRICT Path
+    E_Mode -->|STRICT| Strict_Check{cycles_left <= 1?}:::decision
+    Strict_Check -->|Yes| Strict_Batch[Execute all remaining uops]:::process
+    Strict_Check -->|No| Strict_Spread[Execute dynamic ceiling batch]:::process
+    Strict_Batch & Strict_Spread --> Strict_End{current_execution_cycles >= target_latency?}:::decision
+    Strict_End -->|Yes| TransitionDONE[Transition state_ = DONE]:::process
+    Strict_End -->|No| End
+
+    %% BOTTLENECK / ADDITIVE / DYNAMIC Paths
+    E_Mode -->|BOTTLENECK / ADDITIVE / DYNAMIC| E1{uop_index_ < uops.size?}:::decision
+    E1 -->|No| LatencyMet{Is target latency met?}:::decision
+    LatencyMet -->|Yes| TransitionDONE
+    LatencyMet -->|No| Stall[Stall pipeline / increment cycle count]:::process
+
+    E1 -->|Yes| E2[Lookup uop and check execution latency]:::process
+    E2 --> LatencyCheck{current_uop_cycles_ >= uop_latency?}:::decision
+    LatencyCheck -->|No| Stall
+    LatencyCheck -->|Yes| E3[perform_uop action]:::process
+    E3 --> E4[Increment uop_index_, reset uop cycles]:::process
+    E4 --> End
+    Stall --> End
+    TransitionDONE --> End
+
+    %% DONE state
+    StateSwitch -->|DONE| State_DONE[ExecutionState::DONE]:::state
+    State_DONE --> PC_Check{PC == fetch_pc_ && !pc_modified_?}:::decision
+    PC_Check -->|True| IncPC[PC += units_fetched_ * unit_bytes]:::process
+    PC_Check -->|False| IntrCheck{interrupt_pending_?}:::decision
+    IncPC --> IntrCheck
+
+    IntrCheck -->|True| SaveContext[Push next PC to Stack via SP, set PC = ISR address]:::process
+    IntrCheck -->|False| ResetFlags[Reset pc_modified_ = false]:::process
+    SaveContext --> ResetFlags
+
+    ResetFlags --> TransitionFETCH[Transition state_ = FETCH]:::process
+    TransitionFETCH --> End

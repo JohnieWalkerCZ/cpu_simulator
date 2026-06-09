@@ -1,0 +1,143 @@
+classDiagram
+    direction TB
+    class Config {
+        +int data_width
+        +int addr_width
+        +vector~RegisterDef~ registers
+        +vector~MemorySegmentDef~ memory_segments
+        +vector~ALUOp~ alu_ops
+        +vector~Instruction~ instructions
+        +vector~PeripheralDef~ peripherals
+        +from_json(json) Config
+    }
+
+    class CPU {
+        -Config cfg_
+        -RegisterFile regs_
+        -Memory mem_
+        -ALU alu_
+        -Executor executor_
+        -vector~DeclarativePeripheral~ dec_peripherals_
+        +load_program(code, uint64_t address)
+        +step()
+        +step_uop()
+        +trigger_interrupt(id)
+    }
+
+    class RegisterFile {
+        -vector~RegisterDef~ defs_
+        -vector~uint64_t~ registers_
+        -unordered_map~string, size_t~ name_to_index_
+        -int pc_index_
+        -int sp_index_
+        -int flags_index_
+        +read(name_or_index) uint64_t
+        +write(name_or_index, value)
+        +get_pc() uint64_t
+        +set_pc(val)
+        +increment_pc(amount)
+        +set_sp(val)
+    }
+
+    class Memory {
+        -vector~uint8_t~ memory_
+        -vector~uint8_t~ instruction_memory_
+        -vector~MemorySegmentDef~ segments_
+        -vector~MMIORegion~ io_regions_
+        -vector~MMIORegion~ port_regions_
+        +read(uint64_t address, is_execute, width) uint64_t
+        +write(uint64_t address, value, width)
+        +map_io_region(uint64_t start, uint64_t end, r_cb, w_cb)
+    }
+
+    class ALU {
+        -Config config_
+        -uint64_t mask_
+        -uint64_t sign_bit_
+        -unordered_map~string, vector~Token~~ compiled_ops_
+        +execute(op_name, a, b, c, width) FullResult
+        -compile_expressions()
+        -tokenize(expr) vector~Token~
+        -shunting_yard(tokens) vector~Token~
+        -evaluate_rpn(rpn, a, b, c) uint64_t
+    }
+
+    class Executor {
+        -Config config_
+        -RegisterFile regs_
+        -Memory mem_
+        -ALU alu_
+        -Decoder decoder_
+        -ExecutionState state_
+        -bool pc_modified_
+        -bool interrupt_pending_
+        -int current_execution_cycles_
+        +step_uop()
+        +get_current_execution_cycles() int
+        -perform_uop(uop)
+        -resolve_operand(arg) uint64_t
+        -write_operand(arg, value)
+    }
+
+    class DeclarativePeripheral {
+        -CPU cpu_
+        -PeripheralDef def_
+        -unordered_map~string, uint64_t~ registers_
+        -unordered_map~string, uint64_t~ internal_vars_
+        +read(uint64_t offset) uint64_t
+        +write(uint64_t offset, value)
+        +tick()
+        -execute_ast(ast, context_value)
+    }
+
+    class Instruction {
+        +string name
+        +uint8_t opcode
+        +vector~int~ encoding
+        +vector~MicroOp~ microcode
+        +int execution_latency
+        +LatencyMode latency_mode
+    }
+
+    class MemorySegmentDef {
+        +string name
+        +uint64_t start
+        +uint64_t end
+        +bool r
+        +bool w
+        +bool x
+    }
+
+    class PeripheralDef {
+        +string name
+        +string type
+        +uint64_t address_start
+        +uint64_t address_end
+        +unordered_map~string, string~ parameters
+        +vector~PeripheralRegisterDef~ registers
+        +unordered_map~string, uint64_t~ internal_state
+        +json tick_behavior
+    }
+
+    class LatencyMode {
+        <<enumeration>>
+        DYNAMIC
+        STRICT
+        BOTTLENECK
+        ADDITIVE
+    }
+
+    CPU *-- Config : contains
+    CPU *-- RegisterFile : contains
+    CPU *-- Memory : contains
+    CPU *-- ALU : contains
+    CPU *-- Executor : contains
+    CPU *-- DeclarativePeripheral : contains many
+    Executor o-- RegisterFile : interacts with
+    Executor o-- Memory : interacts with
+    Executor o-- ALU : interacts with
+    DeclarativePeripheral o-- CPU : triggers interrupts/writes
+    Instruction o-- LatencyMode : uses
+    Config o-- Instruction : contains
+    Config o-- MemorySegmentDef : contains
+    Config o-- PeripheralDef : contains
