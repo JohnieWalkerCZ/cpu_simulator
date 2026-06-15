@@ -34,14 +34,11 @@ Memory::Memory(const Config &config)
 
 void Memory::check_access(uint64_t address, bool req_r, bool req_w,
                           bool req_x) const {
+
     if (!is_valid_address(address)) {
         throw std::runtime_error("Memory Access Violation: Address 0x" +
                                  std::to_string(address) +
                                  " is out of physical bounds.");
-    }
-
-    if (req_w && arch_ == MemoryArch::Harvard) {
-        return;
     }
 
     for (const auto &seg : segments_) {

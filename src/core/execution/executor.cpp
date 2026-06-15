@@ -18,7 +18,6 @@ Executor::Executor(Config &config, RegisterFile &regs, Memory &mem, ALU &alu)
     if (pc_idx_ == -1)
         throw std::runtime_error("Executor: PC register role not found.");
 
-    // Load microcode definitions from config into a searchable map
     for (const auto &inst : config_.instructions) {
         if (inst.microcode.empty()) {
             throw std::runtime_error("Instruction " + inst.name +
@@ -43,6 +42,12 @@ void Executor::reset() {
     interrupt_pending_ = false;
     pending_interrupt_id_ = -1;
     pc_modified_ = false;
+
+    last_data_val_ = 0;
+    last_addr_val_ = 0;
+    last_alu_a_ = 0;
+    last_alu_b_ = 0;
+    last_alu_out_ = 0;
 }
 
 void Executor::step_uop() {
@@ -54,7 +59,6 @@ void Executor::step_uop() {
     switch (state_) {
     case ExecutionState::FETCH: {
         fetch_pc_ = regs_.get_pc();
-
         current_inst_ = DecodedInstruction();
 
         int unit_bits = config_.data_width;
@@ -76,9 +80,13 @@ void Executor::step_uop() {
         }
 
         current_inst_.raw_bits = raw;
+        last_addr_val_ = fetch_pc_;
+        last_data_val_ = raw;
+
         state_ = ExecutionState::DECODE;
         break;
     }
+
     case ExecutionState::DECODE: {
         int fetched_bits = units_fetched_ * config_.data_width;
 
@@ -96,6 +104,11 @@ void Executor::step_uop() {
         uop_index_ = 0;
         current_uop_cycles_ = 0;
         current_execution_cycles_ = 0;
+
+        // Perform visual pipeline lookahead resolution before entering
+        // execution state
+        pre_resolve_diagnostics();
+
         state_ = ExecutionState::EXECUTE_UOPS;
         break;
     }
@@ -114,21 +127,17 @@ void Executor::step_uop() {
             }
         }
 
-        // ==========================================================
-        // MODE A: STRICT (Fixed-Latency execution window)
-        // ==========================================================
+        // STRICT Mode
         if (mode == LatencyMode::STRICT) {
             int cycles_left = target_latency - (current_execution_cycles_ - 1);
 
             if (cycles_left <= 1) {
-                // Final clock cycle: execute all remaining operations
                 while (uop_index_ < uops.size()) {
                     perform_uop(uops[uop_index_]);
                     uop_index_++;
                 }
                 state_ = ExecutionState::DONE;
             } else {
-                // Evenly distribute micro-operations
                 int uops_left = static_cast<int>(uops.size()) -
                                 static_cast<int>(uop_index_);
                 if (uops_left > 0) {
@@ -145,10 +154,7 @@ void Executor::step_uop() {
                 state_ = ExecutionState::DONE;
             }
         }
-
-        // ==========================================================
-        // MODE B: BOTTLENECK / MAX (Stalls if micro-ops finish early)
-        // ==========================================================
+        // BOTTLENECK Mode
         else if (mode == LatencyMode::BOTTLENECK) {
             if (uop_index_ < uops.size()) {
                 const auto &uop = uops[uop_index_];
@@ -179,10 +185,7 @@ void Executor::step_uop() {
                 state_ = ExecutionState::DONE;
             }
         }
-
-        // ==========================================================
-        // MODE C: ADDITIVE (Dynamic Micro-op Timing + Static Overhead)
-        // ==========================================================
+        // ADDITIVE Mode
         else if (mode == LatencyMode::ADDITIVE) {
             if (uop_index_ < uops.size()) {
                 const auto &uop = uops[uop_index_];
@@ -211,10 +214,7 @@ void Executor::step_uop() {
                 }
             }
         }
-
-        // ==========================================================
-        // MODE D: DYNAMIC (Standard Fallback, Omitted Latency)
-        // ==========================================================
+        // DYNAMIC Mode (Fallback)
         else {
             if (uop_index_ < uops.size()) {
                 const auto &uop = uops[uop_index_];
@@ -267,6 +267,10 @@ void Executor::step_uop() {
 
         pc_modified_ = false;
 
+        // Pre-cache next PC address to update visualizer instantly in upcoming
+        // FETCH frame
+        last_addr_val_ = regs_.get_pc();
+
         state_ = ExecutionState::FETCH;
         break;
     }
@@ -278,6 +282,8 @@ void Executor::perform_uop(const MicroOp &uop) {
         uint64_t val = resolve_operand(uop.args.at("source"));
         write_operand(uop.args.at("dest"), val);
 
+        last_data_val_ = val;
+
     } else if (uop.action == "alu") {
         uint64_t a = resolve_operand(uop.args.at("a"));
         uint64_t b =
@@ -288,6 +294,11 @@ void Executor::perform_uop(const MicroOp &uop) {
         int op_width = get_operand_width(uop.args.at("out"));
         auto res = alu_.execute(uop.args.at("op"), a, b, c, op_width);
         write_operand(uop.args.at("out"), res.value);
+
+        last_alu_a_ = a;
+        last_alu_b_ = b;
+        last_alu_out_ = res.value;
+        last_data_val_ = res.value;
 
         if (uop.args.count("update_flags") &&
             uop.args.at("update_flags") == "true") {
@@ -301,11 +312,17 @@ void Executor::perform_uop(const MicroOp &uop) {
         uint64_t val = mem_.read(static_cast<uint32_t>(addr), false, width);
         write_operand(uop.args.at("out"), val);
 
+        last_addr_val_ = addr;
+        last_data_val_ = val;
+
     } else if (uop.action == "mem_write") {
         uint64_t addr = resolve_operand(uop.args.at("addr"));
         uint64_t data = resolve_operand(uop.args.at("data"));
         int width = get_operand_width(uop.args.at("data"));
         mem_.write(static_cast<uint32_t>(addr), data, width);
+
+        last_addr_val_ = addr;
+        last_data_val_ = data;
 
     } else if (uop.action == "port_read") {
         uint64_t port = resolve_operand(uop.args.at("port"));
@@ -313,10 +330,16 @@ void Executor::perform_uop(const MicroOp &uop) {
         uint64_t val = mem_.port_read(static_cast<uint32_t>(port));
         write_operand(uop.args.at("out"), val);
 
+        last_addr_val_ = port;
+        last_data_val_ = val;
+
     } else if (uop.action == "port_write") {
         uint64_t port = resolve_operand(uop.args.at("port"));
         uint64_t data = resolve_operand(uop.args.at("data"));
         mem_.port_write(static_cast<uint32_t>(port), data);
+
+        last_addr_val_ = port;
+        last_data_val_ = data;
 
     } else if (uop.action == "coproc_read") {
         int cp_id = static_cast<int>(resolve_operand(uop.args.at("cp")));
@@ -324,11 +347,15 @@ void Executor::perform_uop(const MicroOp &uop) {
         uint64_t val = regs_.read_coproc(cp_id, reg_id);
         write_operand(uop.args.at("out"), val);
 
+        last_data_val_ = val;
+
     } else if (uop.action == "coproc_write") {
         int cp_id = static_cast<int>(resolve_operand(uop.args.at("cp")));
         int reg_id = static_cast<int>(resolve_operand(uop.args.at("reg")));
         uint64_t data = resolve_operand(uop.args.at("data"));
         regs_.write_coproc(cp_id, reg_id, data);
+
+        last_data_val_ = data;
 
     } else if (uop.action == "branch") {
         bool cond = true;
@@ -375,6 +402,7 @@ void Executor::perform_uop(const MicroOp &uop) {
 
         if (cond) {
             uint64_t target = resolve_operand(uop.args.at("target"));
+            last_addr_val_ = target;
             if (uop.args.count("relative") &&
                 uop.args.at("relative") == "true") {
                 regs_.set_pc(regs_.get_pc() + target);
@@ -387,11 +415,71 @@ void Executor::perform_uop(const MicroOp &uop) {
         halted_ = true;
     }
 }
+
+void Executor::pre_resolve_diagnostics() {
+    const auto &uops = microcode_map.at(current_inst_.opcode);
+    if (uops.empty())
+        return;
+
+    const auto &uop = uops[0];
+
+    if (uop.action == "copy") {
+        uint64_t val = uop.args.count("source")
+                           ? resolve_operand(uop.args.at("source"))
+                           : 0;
+        last_data_val_ = val;
+
+    } else if (uop.action == "alu") {
+        uint64_t a =
+            uop.args.count("a") ? resolve_operand(uop.args.at("a")) : 0;
+        uint64_t b =
+            uop.args.count("b") ? resolve_operand(uop.args.at("b")) : 0;
+        uint64_t c =
+            uop.args.count("c") ? resolve_operand(uop.args.at("c")) : 0;
+
+        int op_width = uop.args.count("out")
+                           ? get_operand_width(uop.args.at("out"))
+                           : config_.data_width;
+        if (uop.args.count("op")) {
+            auto res = alu_.execute(uop.args.at("op"), a, b, c, op_width);
+            last_alu_a_ = a;
+            last_alu_b_ = b;
+            last_alu_out_ = res.value;
+            last_data_val_ = res.value;
+        }
+
+    } else if (uop.action == "mem_read") {
+        uint64_t addr =
+            uop.args.count("addr") ? resolve_operand(uop.args.at("addr")) : 0;
+        last_addr_val_ = addr;
+
+        int width = uop.args.count("out")
+                        ? get_operand_width(uop.args.at("out"))
+                        : config_.data_width;
+        uint64_t val = mem_.read(static_cast<uint32_t>(addr), false, width);
+        last_data_val_ = val;
+
+    } else if (uop.action == "mem_write") {
+        uint64_t addr =
+            uop.args.count("addr") ? resolve_operand(uop.args.at("addr")) : 0;
+        uint64_t data =
+            uop.args.count("data") ? resolve_operand(uop.args.at("data")) : 0;
+
+        last_addr_val_ = addr;
+        last_data_val_ = data;
+
+    } else if (uop.action == "branch") {
+        uint64_t target = uop.args.count("target")
+                              ? resolve_operand(uop.args.at("target"))
+                              : 0;
+        last_addr_val_ = target;
+    }
+}
+
 uint64_t Executor::resolve_operand(const std::string &arg) {
     if (arg.empty())
         return 0;
 
-    // Decoded bitfields
     if (arg[0] == '@') {
         std::string token = arg.substr(1);
         if (current_inst_.regs.count(token))
@@ -401,7 +489,6 @@ uint64_t Executor::resolve_operand(const std::string &arg) {
         return 0;
     }
 
-    // Special Registers / Roles
     if (arg[0] == '$') {
         std::string reg = arg.substr(1);
         if (reg == "PC")
@@ -417,7 +504,6 @@ uint64_t Executor::resolve_operand(const std::string &arg) {
         return regs_.read(reg);
     }
 
-    // Literals
     if (arg[0] == '#') {
         std::string val = arg.substr(1);
         if (val == "WORD_SIZE")

@@ -14,6 +14,7 @@ struct RegisterDef {
 
     bool is_alias = false;
     int physical_index = -1;
+    int parent_index = -1;
     int absolute_bit_offset = 0;
 
     std::vector<int> bit_mapping;

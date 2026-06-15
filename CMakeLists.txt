@@ -63,14 +63,13 @@ add_library(cpu_core STATIC
     src/core/assembly/assembler.cpp
     src/core/peripherals/declarative_peripheral.cpp
 )
-target_include_directories(cpu_core PUBLIC src)
-
+target_include_directories(cpu_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(cpu_core PUBLIC nlohmann_json)
 
 add_executable(cpu_sim
     src/main.cpp
 )
-target_link_libraries(cpu_sim cpu_core imgui SDL2::SDL2 ${OPENGL_LIBRARIES} dl)
+target_link_libraries(cpu_sim cpu_core imgui SDL2::SDL2 ${OPENGL_LIBRARIES} ${CMAKE_DL_LIBS})
 
 enable_testing()
 

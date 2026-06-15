@@ -149,7 +149,11 @@ class ExprParser {
             size_t start = p;
             while (p < s.size() && (isalnum(s[p]) || s[p] == 'x'))
                 p++;
-            return std::stoull(s.substr(start, p - start), nullptr, 0);
+            std::string token = s.substr(start, p - start);
+            if (token.size() > 2 && (token[1] == 'b' || token[1] == 'B')) {
+                return std::stoull(token.substr(2), nullptr, 2);
+            }
+            return std::stoull(token, nullptr, 0);
         }
         if (isalpha(s[p]) || s[p] == '_') {
             size_t start = p;

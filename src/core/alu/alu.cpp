@@ -25,9 +25,9 @@ std::vector<ALU::Token> ALU::tokenize(const std::string &expr) {
         char ch = expr[i];
         if (isspace(ch) || ch == '(' || ch == ')') {
             if (ch == '(')
-                tokens.push_back({TokenType::LITERAL, 999});
+                tokens.push_back({TokenType::L_PAREN});
             if (ch == ')')
-                tokens.push_back({TokenType::LITERAL, 888});
+                tokens.push_back({TokenType::R_PAREN});
             continue;
         }
 
@@ -96,19 +96,19 @@ std::vector<ALU::Token> ALU::shunting_yard(const std::vector<Token> &tokens) {
     };
 
     for (const auto &t : tokens) {
-        if (t.type <= TokenType::LITERAL && t.value != 999 && t.value != 888) {
+        if (t.type <= TokenType::LITERAL) {
             output.push_back(t);
-        } else if (t.value == 999) { // '('
+        } else if (t.type == TokenType::L_PAREN) {
             ops.push(t);
-        } else if (t.value == 888) { // ')'
-            while (!ops.empty() && ops.top().value != 999) {
+        } else if (t.type == TokenType::R_PAREN) {
+            while (!ops.empty() && ops.top().type != TokenType::L_PAREN) {
                 output.push_back(ops.top());
                 ops.pop();
             }
             if (!ops.empty())
                 ops.pop();
         } else {
-            while (!ops.empty() && ops.top().value != 999 &&
+            while (!ops.empty() && ops.top().type != TokenType::L_PAREN &&
                    precedence(ops.top().type) >= precedence(t.type)) {
                 output.push_back(ops.top());
                 ops.pop();
@@ -206,6 +206,9 @@ ALU::FullResult ALU::execute(const std::string &op_name, uint64_t a, uint64_t b,
     uint64_t res = evaluate_rpn(rpn, a, b, c);
     uint64_t final_res = res & op_mask;
 
+    uint64_t masked_a = a & op_mask;
+    uint64_t masked_b = b & op_mask;
+
     uint64_t flags_out = 0;
 
     for (const auto &[flag_name, logic_type] : op_def->flag_rules) {
@@ -231,14 +234,15 @@ ALU::FullResult ALU::execute(const std::string &op_name, uint64_t a, uint64_t b,
             } else if (logic_type == "result_negative") {
                 flag_val = (final_res & op_sign_bit) != 0;
             } else if (logic_type == "carry_add") {
-                flag_val = calc_carry_add(a, b);
+                flag_val = calc_carry_add(masked_a, masked_b, op_mask);
             } else if (logic_type == "carry_sub") {
-                flag_val = calc_carry_sub(a, b);
+                flag_val = calc_carry_sub(masked_a, masked_b);
             } else if (logic_type == "overflow_add") {
-                flag_val =
-                    ((a ^ final_res) & (b ^ final_res) & op_sign_bit) != 0;
+                flag_val = ((masked_a ^ final_res) & (masked_b ^ final_res) &
+                            op_sign_bit) != 0;
             } else if (logic_type == "overflow_sub") {
-                flag_val = ((a ^ b) & (a ^ final_res) & op_sign_bit) != 0;
+                flag_val = ((masked_a ^ masked_b) & (masked_a ^ final_res) &
+                            op_sign_bit) != 0;
             }
         }
 

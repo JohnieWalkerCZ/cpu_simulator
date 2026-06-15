@@ -34,6 +34,7 @@ static void parse_mask_pattern(const nlohmann::json &val, uint64_t &pattern,
 
 static void parse_register_recursive(const nlohmann::json &j_reg, Config &cfg,
                                      int &next_phys_idx, int parent_phys_idx,
+                                     int parent_reg_idx,
                                      const std::string &parent_role,
                                      const std::vector<int> &parent_mapping) {
     RegisterDef reg;
@@ -42,6 +43,7 @@ static void parse_register_recursive(const nlohmann::json &j_reg, Config &cfg,
     reg.is_coproc = j_reg.value("coproc", false);
     reg.coproc_id = j_reg.value("coproc_id", -1);
     reg.coproc_reg_id = j_reg.value("coproc_reg_id", -1);
+    reg.parent_index = parent_reg_idx;
 
     if (j_reg.contains("initial")) {
         if (j_reg["initial"].is_string()) {
@@ -90,7 +92,7 @@ static void parse_register_recursive(const nlohmann::json &j_reg, Config &cfg,
                 if (i < static_cast<int>(active_indices.size())) {
                     reg.bit_mapping[i] = parent_mapping[active_indices[i]];
                 } else {
-                    reg.bit_mapping[i] = 0;
+                    reg.bit_mapping[i] = -1;
                 }
             }
         } else {
@@ -101,19 +103,20 @@ static void parse_register_recursive(const nlohmann::json &j_reg, Config &cfg,
                 if (parent_idx < static_cast<int>(parent_mapping.size())) {
                     reg.bit_mapping[i] = parent_mapping[parent_idx];
                 } else {
-                    reg.bit_mapping[i] = 0;
+                    reg.bit_mapping[i] = -1;
                 }
             }
         }
     }
 
     cfg.registers.push_back(reg);
+    int current_reg_idx = static_cast<int>(cfg.registers.size()) - 1;
 
     if (j_reg.contains("sub_registers")) {
         for (const auto &child : j_reg["sub_registers"]) {
             parse_register_recursive(child, cfg, next_phys_idx,
-                                     reg.physical_index, reg.role,
-                                     reg.bit_mapping);
+                                     reg.physical_index, current_reg_idx,
+                                     reg.role, reg.bit_mapping);
         }
     }
 }
@@ -150,12 +153,12 @@ Config Config::from_json(const nlohmann::json &j) {
         const auto &regs = j["registers"];
         if (regs.contains("general_purpose")) {
             for (const auto &r : regs["general_purpose"]) {
-                parse_register_recursive(r, cfg, next_phys_idx, -1, "", {});
+                parse_register_recursive(r, cfg, next_phys_idx, -1, -1, "", {});
             }
         }
         if (regs.contains("special")) {
             for (const auto &r : regs["special"]) {
-                parse_register_recursive(r, cfg, next_phys_idx, -1,
+                parse_register_recursive(r, cfg, next_phys_idx, -1, -1,
                                          r.value("role", ""), {});
             }
         }

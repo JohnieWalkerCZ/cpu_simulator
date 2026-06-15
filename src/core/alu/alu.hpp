@@ -27,6 +27,8 @@ class ALU {
         OPERAND_B,
         OPERAND_C,
         LITERAL,
+        L_PAREN,
+        R_PAREN,
         OP_ADD,
         OP_SUB,
         OP_MUL,
@@ -55,7 +57,9 @@ class ALU {
 
     bool calc_zero(uint64_t res) { return (res & mask_) == 0; }
     bool calc_negative(uint64_t res) { return (res & sign_bit_) != 0; }
-    bool calc_carry_add(uint64_t a, uint64_t b) { return (a > mask_ - b); }
+    bool calc_carry_add(uint64_t a, uint64_t b, uint64_t op_mask) {
+        return (a > op_mask - b);
+    }
     bool calc_carry_sub(uint64_t a, uint64_t b) { return a < b; }
 
     uint64_t evaluate_flag_expression(const std::string &expr, uint64_t a,

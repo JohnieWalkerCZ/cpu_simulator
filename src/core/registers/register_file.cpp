@@ -59,6 +59,8 @@ uint64_t RegisterFile::read(size_t index) const {
 
     for (size_t i = 0; i < def.bit_mapping.size(); ++i) {
         int phys_bit = def.bit_mapping[i];
+        if (phys_bit == -1)
+            continue;
         uint64_t bit_val = (registers_[def.physical_index] >> phys_bit) & 1;
         result |= (bit_val << i);
     }
@@ -75,6 +77,8 @@ void RegisterFile::write(size_t index, uint64_t value) {
 
     for (size_t i = 0; i < def.bit_mapping.size(); ++i) {
         int phys_bit = def.bit_mapping[i];
+        if (phys_bit == -1)
+            continue;
         uint64_t bit_val = (value >> i) & 1;
 
         physical_val &= ~(1ULL << phys_bit);
@@ -140,6 +144,8 @@ void RegisterFile::reset() {
         if (def.initial != 0) {
             for (size_t i = 0; i < def.bit_mapping.size(); ++i) {
                 int phys_bit = def.bit_mapping[i];
+                if (phys_bit == -1)
+                    continue;
                 uint64_t bit_val = (def.initial >> i) & 1;
 
                 registers_[def.physical_index] &= ~(1ULL << phys_bit);

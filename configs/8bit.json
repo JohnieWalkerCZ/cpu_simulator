@@ -4,6 +4,7 @@
   "address_bus": { "width": 16 },
   "memory": { 
     "size": 65536,
+    "architecture": "von_neumann",
     "segments": [
       { "name": "ROM", "start": "0x0000", "end": "0x1FFF", "R": true, "W": false, "X": true },
       { "name": "RAM", "start": "0x2000", "end": "0xFDFF", "R": true, "W": true,  "X": false },
@@ -52,27 +53,27 @@
     ],
     "operations": [
       { 
-        "name": "ADD", "expression": "a + b", 
-        "flag_rules": { "Z": "result_zero", "C": "carry_add", "V": "overflow_add", "N": "result_negative" } 
+        "name": "ADD", "code": 1, "expression": "a + b", 
+        "flag_rules": { "Z": "result_zero", "C": "carry_add", "O": "overflow_add", "N": "result_negative" } 
       },
       { 
-        "name": "SUB", "expression": "a - b", "latency": 8, 
-        "flag_rules": { "Z": "result_zero", "C": "carry_sub", "V": "overflow_sub", "N": "result_negative" } 
+        "name": "SUB", "code": 2, "expression": "a - b", "latency": 3, 
+        "flag_rules": { "Z": "result_zero", "C": "carry_sub", "O": "overflow_sub", "N": "result_negative" } 
       },
       { 
-        "name": "AND", "expression": "a & b", 
+        "name": "AND", "code": 3, "expression": "a & b", 
         "flag_rules": { "Z": "result_zero", "N": "result_negative" } 
       },
       { 
-        "name": "OR",  "expression": "a | b", 
+        "name": "OR",  "code": 4, "expression": "a | b", 
         "flag_rules": { "Z": "result_zero", "N": "result_negative" } 
       },
       { 
-        "name": "XOR", "expression": "a ^ b", 
+        "name": "XOR", "code": 5, "expression": "a ^ b", 
         "flag_rules": { "Z": "result_zero", "N": "result_negative" } 
       },
       { 
-        "name": "NOT", "expression": "~a", 
+        "name": "NOT", "code": 6, "expression": "~a", 
         "flag_rules": { "Z": "result_zero", "N": "result_negative" } 
       }
     ]

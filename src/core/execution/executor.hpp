@@ -27,7 +27,14 @@ class Executor {
     }
     int get_current_execution_cycles() const {
         return current_execution_cycles_;
-    };
+    }
+    int get_units_fetched() const { return units_fetched_; }
+
+    uint64_t get_last_data_val() const { return last_data_val_; }
+    uint64_t get_last_addr_val() const { return last_addr_val_; }
+    uint64_t get_last_alu_a() const { return last_alu_a_; }
+    uint64_t get_last_alu_b() const { return last_alu_b_; }
+    uint64_t get_last_alu_out() const { return last_alu_out_; }
 
   private:
     Config &config_;
@@ -55,7 +62,16 @@ class Executor {
     bool pc_modified_ = false;
     int current_execution_cycles_ = 0;
 
+    // Captured diagnostics registers
+    uint64_t last_data_val_ = 0;
+    uint64_t last_addr_val_ = 0;
+    uint64_t last_alu_a_ = 0;
+    uint64_t last_alu_b_ = 0;
+    uint64_t last_alu_out_ = 0;
+
     void perform_uop(const MicroOp &uop);
+    void
+    pre_resolve_diagnostics();
     uint64_t resolve_operand(const std::string &arg);
     void write_operand(const std::string &arg, uint64_t value);
     int get_operand_width(const std::string &arg);

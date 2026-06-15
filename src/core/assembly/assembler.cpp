@@ -71,7 +71,7 @@ int Assembler::get_register_index(const std::string &name) const {
 
 uint64_t Assembler::parse_operand(
     const std::string &op,
-    const std::unordered_map<std::string, uint32_t> &labels) {
+    const std::unordered_map<std::string, uint64_t> &labels) {
     std::string cleaned = op;
     if (!cleaned.empty() && cleaned[0] == '#') {
         cleaned = cleaned.substr(1);
@@ -89,8 +89,8 @@ uint64_t Assembler::parse_operand(
 }
 
 std::vector<uint8_t> Assembler::assemble(const std::string &source,
-                                         uint32_t load_address) {
-    std::unordered_map<std::string, uint32_t> labels;
+                                         uint64_t load_address) {
+    std::unordered_map<std::string, uint64_t> labels;
     std::istringstream iss(source);
     std::string line;
 
@@ -99,10 +99,11 @@ std::vector<uint8_t> Assembler::assemble(const std::string &source,
         const Instruction *inst = nullptr;
         int total_bits = 0;
         int units = 0;
+        uint64_t address = 0;
     };
 
     std::vector<ParsedLine> parsed_lines;
-    uint32_t current_addr = load_address;
+    uint64_t current_addr = load_address;
 
     // Pass 1: Resolve labels and calculate instruction sizes
     while (std::getline(iss, line)) {
@@ -156,7 +157,8 @@ std::vector<uint8_t> Assembler::assemble(const std::string &source,
         }
 
         int units = (total_bits + config_.data_width - 1) / config_.data_width;
-        parsed_lines.push_back({tokens, matched_inst, total_bits, units});
+        parsed_lines.push_back(
+            {tokens, matched_inst, total_bits, units, current_addr});
         int unit_bytes = (config_.data_width + 7) / 8;
         current_addr += units * unit_bytes;
     }
@@ -189,6 +191,13 @@ std::vector<uint8_t> Assembler::assemble(const std::string &source,
                     width = reg_field_width_;
                 } else {
                     val = parse_operand(op_token, labels);
+                    if (enc == -4) {
+                        int unit_bytes = (config_.data_width + 7) / 8;
+                        uint64_t next_pc =
+                            pline.address + pline.units * unit_bytes;
+                        val = val - next_pc;
+                    }
+
                     if (enc == -4 || enc == -5)
                         width = 8;
                     else if (enc == -6)
