@@ -62,7 +62,8 @@ inline void DrawDecoderBlock(ImDrawList *draw_list, ImVec2 ctrl_pos,
                              ImVec2 box_size,
                              const DecodedInstruction &cur_inst,
                              ExecutionState exec_state, float ir_bus,
-                             ImU32 col_box, ImU32 col_text, ImU32 col_inactive,
+                             bool branch_not_taken, ImU32 col_box,
+                             ImU32 col_text, ImU32 col_inactive,
                              ImU32 col_active, float zoom) {
     if (exec_state == ExecutionState::DECODE) {
         ImU32 col_decoder_active_bg = IM_COL32(0, 45, 5, 200);
@@ -105,6 +106,8 @@ inline void DrawDecoderBlock(ImDrawList *draw_list, ImVec2 ctrl_pos,
                            exec_state == ExecutionState::EXECUTE_UOPS) &&
                           cur_inst.is_valid;
     std::string ctrl_text = show_inst_name ? cur_inst.name : "DECODER";
+    if (show_inst_name && branch_not_taken)
+        ctrl_text += " (not taken)";
     ImVec2 ctrl_lbl_pos = ImGui::CalcTextSize(ctrl_text.c_str());
     ctrl_lbl_pos.x *= zoom;
     ctrl_lbl_pos.y *= zoom;
@@ -136,38 +139,213 @@ inline void DrawALUBlock(ImDrawList *draw_list, float alu_cx, float alu_top_y,
 }
 
 /**
- * @brief Draws the Unified Memory segment including ROM, RAM, and Stack spaces.
+ * @brief Selects which permission bit makes a memory segment "relevant" to a
+ * given memory panel, so irrelevant segments can be visually muted.
  */
+enum class MemPanelKind { Unified, Instruction, Data };
 
-inline void DrawMemoryBlock(ImDrawList *draw_list, ImVec2 mem_pos, float mem_w,
-                            float mem_h, float data_bus, ImU32 col_box,
-                            ImU32 col_text, ImU32 col_inactive,
-                            ImU32 col_active, float zoom) {
-    draw_list->AddRectFilled(mem_pos,
-                             ImVec2(mem_pos.x + mem_w, mem_pos.y + mem_h),
-                             col_box, 4.0f * zoom);
-    draw_list->AddRect(mem_pos, ImVec2(mem_pos.x + mem_w, mem_pos.y + mem_h),
-                       MixGlowColor(col_inactive, col_active, data_bus),
+/**
+ * @brief Draws one titled memory panel with bands proportional to each
+ * configured memory segment's address range, labeled by segment name.
+ * Hovering a band shows its exact address range and R/W/X permissions.
+ */
+inline void DrawMemorySegmentPanel(
+    ImDrawList *draw_list, ImVec2 panel_pos, ImVec2 panel_size,
+    const char *title, const std::vector<MemorySegmentDef> &sorted_segments,
+    int addr_width, MemPanelKind kind, float bus_intensity, ImU32 col_box,
+    ImU32 col_text, ImU32 col_inactive, ImU32 col_active, float zoom) {
+    ImVec2 panel_max(panel_pos.x + panel_size.x, panel_pos.y + panel_size.y);
+
+    draw_list->AddRectFilled(panel_pos, panel_max, col_box, 4.0f * zoom);
+    draw_list->AddRect(panel_pos, panel_max,
+                       MixGlowColor(col_inactive, col_active, bus_intensity),
                        4.0f * zoom, 0, 2.0f * zoom);
 
     draw_list->AddText(
         ImGui::GetFont(), ImGui::GetFontSize() * zoom,
-        ImVec2(mem_pos.x + 10.0f * zoom, mem_pos.y + 15.0f * zoom), col_text,
-        "Instruction ROM");
-    draw_list->AddLine(ImVec2(mem_pos.x, mem_pos.y + (mem_h * 0.33f)),
-                       ImVec2(mem_pos.x + mem_w, mem_pos.y + (mem_h * 0.33f)),
+        ImVec2(panel_pos.x + 6.0f * zoom, panel_pos.y + 2.0f * zoom), col_text,
+        title);
+    float header_h = 18.0f * zoom;
+    draw_list->AddLine(ImVec2(panel_pos.x, panel_pos.y + header_h),
+                       ImVec2(panel_max.x, panel_pos.y + header_h),
                        col_inactive, 1.0f * zoom);
-    draw_list->AddText(ImGui::GetFont(), ImGui::GetFontSize() * zoom,
-                       ImVec2(mem_pos.x + 10.0f * zoom,
-                              mem_pos.y + (mem_h * 0.33f) + 15.0f * zoom),
-                       col_text, "Data RAM");
-    draw_list->AddLine(ImVec2(mem_pos.x, mem_pos.y + (mem_h * 0.66f)),
-                       ImVec2(mem_pos.x + mem_w, mem_pos.y + (mem_h * 0.66f)),
-                       col_inactive, 1.0f * zoom);
-    draw_list->AddText(ImGui::GetFont(), ImGui::GetFontSize() * zoom,
-                       ImVec2(mem_pos.x + 10.0f * zoom,
-                              mem_pos.y + (mem_h * 0.66f) + 15.0f * zoom),
-                       col_text, "Stack Frame");
+
+    // Instruction Memory has no concept of segments in this simulator (the
+    // segment list describes the data address map) — just show the panel.
+    if (kind == MemPanelKind::Instruction || sorted_segments.empty())
+        return;
+
+    float body_top = panel_pos.y + header_h;
+    float body_h = panel_size.y - header_h;
+
+    // Every segment gets a guaranteed minimum band height first, so small
+    // segments (e.g. a 512-byte STACK next to a 56KB RAM) stay visible and
+    // labeled; remaining space is distributed by relative byte size.
+    float min_band_h = 14.0f * zoom;
+    float remaining = body_h - min_band_h * sorted_segments.size();
+    if (remaining < 0.0f)
+        remaining = 0.0f;
+
+    uint64_t total_bytes = 0;
+    for (const auto &seg : sorted_segments)
+        total_bytes += (seg.end - seg.start + 1);
+    if (total_bytes == 0)
+        total_bytes = 1;
+
+    float y = body_top;
+    for (size_t i = 0; i < sorted_segments.size(); ++i) {
+        const auto &seg = sorted_segments[i];
+        uint64_t seg_bytes = seg.end - seg.start + 1;
+        float band_h = min_band_h + remaining * (static_cast<float>(seg_bytes) /
+                                                  static_cast<float>(total_bytes));
+        float y0 = y;
+        float y1 = (i + 1 == sorted_segments.size()) ? panel_max.y : y + band_h;
+
+        bool relevant = (kind != MemPanelKind::Data) || seg.r || seg.w;
+        ImU32 row_text_col =
+            relevant ? col_text : MixGlowColor(col_text, col_inactive, 0.6f);
+
+        draw_list->AddText(ImGui::GetFont(), ImGui::GetFontSize() * zoom,
+                           ImVec2(panel_pos.x + 8.0f * zoom, y0 + 3.0f * zoom),
+                           row_text_col, seg.name.c_str());
+
+        char addr_buf[32];
+        snprintf(addr_buf, sizeof(addr_buf), "%s-%s",
+                FormatHexValue(seg.start, addr_width).c_str(),
+                FormatHexValue(seg.end, addr_width).c_str());
+        float addr_scale = zoom * 0.75f;
+        ImVec2 addr_text_size = ImGui::CalcTextSize(addr_buf);
+        addr_text_size.x *= addr_scale;
+        addr_text_size.y *= addr_scale;
+        ImU32 addr_col = MixGlowColor(row_text_col, col_inactive, 0.3f);
+        draw_list->AddText(
+            ImGui::GetFont(), ImGui::GetFontSize() * addr_scale,
+            ImVec2(panel_max.x - addr_text_size.x - 6.0f * zoom,
+                  y0 + 3.0f * zoom +
+                      (ImGui::GetFontSize() * zoom - addr_text_size.y) / 2.0f),
+            addr_col, addr_buf);
+
+        if (i > 0) {
+            draw_list->AddLine(ImVec2(panel_pos.x, y0),
+                               ImVec2(panel_max.x, y0), col_inactive,
+                               1.0f * zoom);
+        }
+
+        ImGui::PushID(title);
+        ImGui::PushID(static_cast<int>(i));
+        ImGui::SetCursorScreenPos(ImVec2(panel_pos.x, y0));
+        ImGui::InvisibleButton("##MemSegRow", ImVec2(panel_size.x, y1 - y0));
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("%s\n%s - %s\nR:%s  W:%s  X:%s", seg.name.c_str(),
+                              FormatHexValue(seg.start, addr_width).c_str(),
+                              FormatHexValue(seg.end, addr_width).c_str(),
+                              seg.r ? "yes" : "no", seg.w ? "yes" : "no",
+                              seg.x ? "yes" : "no");
+        }
+        ImGui::PopID();
+        ImGui::PopID();
+
+        y = y1;
+    }
+}
+
+/**
+ * @brief Draws the Memory section: one "Unified Memory" panel for Von
+ * Neumann architectures, or stacked "Instruction Memory" / "Data Memory"
+ * panels for Harvard architectures, with bands reflecting the actual
+ * configured memory segments.
+ */
+inline void DrawMemoryBlock(ImDrawList *draw_list, ImVec2 mem_pos, float mem_w,
+                            float mem_h, CPU &cpu, GUIState &gui,
+                            ImU32 col_box, ImU32 col_text, ImU32 col_inactive,
+                            ImU32 col_active, float zoom) {
+    auto &config = cpu.get_config();
+    auto &mem = cpu.get_memory();
+    auto &h = gui.highlighter;
+
+    std::vector<MemorySegmentDef> sorted_segs = config.memory_segments;
+    std::sort(sorted_segs.begin(), sorted_segs.end(),
+             [](const MemorySegmentDef &a, const MemorySegmentDef &b) {
+                 return a.start < b.start;
+             });
+
+    if (!mem.is_harvard()) {
+        DrawMemorySegmentPanel(draw_list, mem_pos, ImVec2(mem_w, mem_h),
+                               "Unified Memory", sorted_segs, config.addr_width,
+                               MemPanelKind::Unified, h.data_bus, col_box,
+                               col_text, col_inactive, col_active, zoom);
+        return;
+    }
+
+    // Instruction Memory shows no segments, so it only needs room for its
+    // title; Data Memory gets the rest of the box.
+    float gap = 6.0f * zoom;
+    float instr_h = 40.0f * zoom;
+    float data_h = mem_h - gap - instr_h;
+    if (data_h < 0.0f)
+        data_h = 0.0f;
+
+    ImVec2 instr_pos = mem_pos;
+    ImVec2 data_pos = ImVec2(mem_pos.x, mem_pos.y + instr_h + gap);
+
+    DrawMemorySegmentPanel(draw_list, instr_pos, ImVec2(mem_w, instr_h),
+                          "Instruction Memory", sorted_segs, config.addr_width,
+                          MemPanelKind::Instruction, h.ir_bus, col_box,
+                          col_text, col_inactive, col_active, zoom);
+    DrawMemorySegmentPanel(draw_list, data_pos, ImVec2(mem_w, data_h),
+                          "Data Memory", sorted_segs, config.addr_width,
+                          MemPanelKind::Data, h.data_bus, col_box, col_text,
+                          col_inactive, col_active, zoom);
+}
+
+/**
+ * @brief Draws the Peripherals block as one row per configured device,
+ * labeled by name, highlighting whichever one is currently being accessed.
+ * Falls back to a single generic "Peripherals" label if none are configured.
+ */
+inline void DrawPeripheralsBlock(ImDrawList *draw_list, ImVec2 pos,
+                                 ImVec2 size,
+                                 const std::vector<PeripheralDef> &peripherals,
+                                 const std::string &active_name,
+                                 float bus_intensity, ImU32 col_box,
+                                 ImU32 col_text, ImU32 col_inactive,
+                                 ImU32 col_active, float zoom) {
+    if (peripherals.empty()) {
+        DrawBlock(draw_list, pos, size, "Peripherals", col_inactive,
+                 col_active, bus_intensity, col_text, col_box, zoom);
+        return;
+    }
+
+    ImVec2 pmax(pos.x + size.x, pos.y + size.y);
+    draw_list->AddRectFilled(pos, pmax, col_box, 4.0f * zoom);
+    draw_list->AddRect(pos, pmax,
+                       MixGlowColor(col_inactive, col_active, bus_intensity),
+                       4.0f * zoom, 0, 2.0f * zoom);
+
+    float row_h = size.y / static_cast<float>(peripherals.size());
+    for (size_t i = 0; i < peripherals.size(); ++i) {
+        const auto &p = peripherals[i];
+        float y0 = pos.y + i * row_h;
+        bool is_active = bus_intensity > 0.1f && p.name == active_name;
+        ImU32 row_col =
+            is_active ? col_text : MixGlowColor(col_text, col_inactive, 0.5f);
+
+        if (is_active) {
+            draw_list->AddRectFilled(
+                ImVec2(pos.x, y0), ImVec2(pmax.x, y0 + row_h),
+                MixGlowColor(col_box, col_active, 0.25f * bus_intensity), 0.0f);
+        }
+        draw_list->AddText(ImGui::GetFont(), ImGui::GetFontSize() * zoom * 0.85f,
+                           ImVec2(pos.x + 6.0f * zoom,
+                                  y0 + (row_h - ImGui::GetFontSize() * zoom *
+                                                    0.85f) /
+                                           2.0f),
+                           row_col, p.name.c_str());
+        if (i > 0) {
+            draw_list->AddLine(ImVec2(pos.x, y0), ImVec2(pmax.x, y0),
+                               col_inactive, 1.0f * zoom);
+        }
+    }
 }
 
 /**
@@ -535,14 +713,14 @@ inline void DrawALUOutputWire(ImDrawList *draw_list, BusHighlighter &h,
  * @brief Draws the MMIO Connection wire. Only renders when active.
  */
 inline void DrawMMIOConnection(ImDrawList *draw_list, BusHighlighter &h,
-                               ImVec2 mem_pos, ImVec2 mmio_pos,
+                               ImVec2 mem_pos, ImVec2 mmio_pos, float mmio_h,
                                ImU32 col_inactive, ImU32 col_active,
                                float zoom) {
     if (h.mmio_path <= 0.01f)
         return;
     PointList mmio_path;
     mmio_path.add(ImVec2(mem_pos.x + 50.0f * zoom, mem_pos.y));
-    mmio_path.add(ImVec2(mmio_pos.x + 50.0f * zoom, mmio_pos.y + 50.0f * zoom));
+    mmio_path.add(ImVec2(mmio_pos.x + 50.0f * zoom, mmio_pos.y + mmio_h));
 
     mmio_path.draw(draw_list,
                    MixGlowColor(col_inactive, col_active, h.mmio_path),
@@ -557,8 +735,8 @@ inline void DrawMMIOConnection(ImDrawList *draw_list, BusHighlighter &h,
 inline void DrawSignalBuses(ImDrawList *draw_list, CPU &cpu, GUIState &gui,
                             ImVec2 reg_pos, float reg_file_w, float reg_file_h,
                             ImVec2 ctrl_pos, ImVec2 mem_pos, ImVec2 mmio_pos,
-                            float alu_cx, float alu_top_y, ImVec2 alu_poly_out,
-                            float pc_y, float db_reg_y,
+                            float mmio_h, float alu_cx, float alu_top_y,
+                            ImVec2 alu_poly_out, float pc_y, float db_reg_y,
                             const std::vector<float> &reg_drawn_y,
                             ImU32 col_inactive, ImU32 col_abus, ImU32 col_dbus,
                             ImU32 col_irbus, ImU32 col_alubus,
@@ -589,7 +767,7 @@ inline void DrawSignalBuses(ImDrawList *draw_list, CPU &cpu, GUIState &gui,
                       db_reg_y, col_inactive, col_alubus, zoom);
 
     // 7. MMIO Connection
-    DrawMMIOConnection(draw_list, h, mem_pos, mmio_pos, col_inactive,
+    DrawMMIOConnection(draw_list, h, mem_pos, mmio_pos, mmio_h, col_inactive,
                        col_active, zoom);
 }
 
@@ -695,13 +873,12 @@ inline void DrawControlBuses(ImDrawList *draw_list, ImVec2 reg_pos,
                                            255 * max_right_ctrl)
                           << 24);
 
+        // Shared riser up to the ceiling trunk; the mem/periph branches below
+        // fork out independently from here so neither has to cut through the
+        // other's column on its way down.
         draw_marching_dashes(
             ImVec2(ctrl_pos.x + 130.0f * zoom, ctrl_pos.y),
             ImVec2(ctrl_pos.x + 130.0f * zoom, origin_y + 5.0f * zoom),
-            col_right_ctrl, max_right_ctrl);
-        draw_marching_dashes(
-            ImVec2(ctrl_pos.x + 130.0f * zoom, origin_y + 5.0f * zoom),
-            ImVec2(mem_pos.x + 50.0f * zoom, origin_y + 5.0f * zoom),
             col_right_ctrl, max_right_ctrl);
 
         if (h.ctrl_periph_bus > 0.01f) {
@@ -713,8 +890,12 @@ inline void DrawControlBuses(ImDrawList *draw_list, ImVec2 reg_pos,
                                   255 * h.ctrl_periph_bus)
                  << 24);
             draw_marching_dashes(
-                ImVec2(mem_pos.x + 50.0f * zoom, origin_y + 5.0f * zoom),
-                ImVec2(mem_pos.x + 50.0f * zoom, mmio_pos.y), col_periph_ctrl,
+                ImVec2(ctrl_pos.x + 130.0f * zoom, origin_y + 5.0f * zoom),
+                ImVec2(mmio_pos.x + 50.0f * zoom, origin_y + 5.0f * zoom),
+                col_periph_ctrl, h.ctrl_periph_bus);
+            draw_marching_dashes(
+                ImVec2(mmio_pos.x + 50.0f * zoom, origin_y + 5.0f * zoom),
+                ImVec2(mmio_pos.x + 50.0f * zoom, mmio_pos.y), col_periph_ctrl,
                 h.ctrl_periph_bus);
         }
 
@@ -726,7 +907,7 @@ inline void DrawControlBuses(ImDrawList *draw_list, ImVec2 reg_pos,
                                              255 * h.ctrl_mem_bus)
                             << 24);
             draw_marching_dashes(
-                ImVec2(mem_pos.x + 50.0f * zoom, origin_y + 5.0f * zoom),
+                ImVec2(ctrl_pos.x + 130.0f * zoom, origin_y + 5.0f * zoom),
                 ImVec2(mem_pos.x + 120.0f * zoom, origin_y + 5.0f * zoom),
                 col_mem_ctrl, h.ctrl_mem_bus);
             draw_marching_dashes(
@@ -814,12 +995,17 @@ inline void UI_SystemSchematic(CPU &cpu, GUIState &gui) {
     float col1_x = origin.x + 40.0f;
     float col2_x = col1_x + (reg_file_w / zoom) + 65.0f;
     float col3_x = col2_x + 140.0f + 65.0f;
+    // 160.0f mirrors the Memory box's unzoomed width (see mem_w below), so the
+    // Peripherals box gets its own column instead of stacking directly above
+    // Memory, where the control bus's vertical drop into Memory would have to
+    // cut straight through it.
+    float col4_x = col3_x + 160.0f + 65.0f;
 
     // Apply Transformation immediately, keeping base items in screen space
     ImVec2 reg_pos = Trans(ImVec2(col1_x, origin.y + 110.0f));
     ImVec2 ctrl_pos = Trans(ImVec2(col2_x, origin.y + 20.0f));
     ImVec2 mem_pos = Trans(ImVec2(col3_x, origin.y + 110.0f));
-    ImVec2 mmio_pos = Trans(ImVec2(col3_x, origin.y + 20.0f));
+    ImVec2 mmio_pos = Trans(ImVec2(col4_x, origin.y + 20.0f));
 
     // Calculate scaled ALU geometry
     float alu_cx = ctrl_pos.x + 70.0f * zoom;
@@ -917,19 +1103,24 @@ inline void UI_SystemSchematic(CPU &cpu, GUIState &gui) {
                           col_write_glow, col_addr_glow, col_pc_glow);
 
     DrawDecoderBlock(draw_list, ctrl_pos, box_size, cur_inst, exec.get_state(),
-                     h.ir_bus, col_box, col_text, col_inactive, col_active,
-                     zoom);
+                     h.ir_bus, !h.branch_taken, col_box, col_text,
+                     col_inactive, col_active, zoom);
 
     DrawALUBlock(draw_list, alu_cx, alu_top_y, alu_poly, h.alu_path, col_box,
                  col_text, col_inactive, col_active, current_alu_op_name, zoom);
 
     float mem_w = 160.0f * gui.zoom;
-    float mem_h = reg_file_h > 240.0f ? reg_file_h : 240.0f;
-    DrawMemoryBlock(draw_list, mem_pos, mem_w, mem_h, h.data_bus, col_box,
+    float mem_h_floor = cpu.get_memory().is_harvard() ? 286.0f : 240.0f;
+    float mem_h = reg_file_h > mem_h_floor ? reg_file_h : mem_h_floor;
+    DrawMemoryBlock(draw_list, mem_pos, mem_w, mem_h, cpu, gui, col_box,
                     col_text, col_inactive, col_active, zoom);
 
-    DrawBlock(draw_list, mmio_pos, box_size, "Peripherals", col_inactive,
-              col_active, h.mmio_path, col_text, col_box, zoom);
+    float mmio_h = std::max(
+        box_size.y, static_cast<float>(config.peripherals.size()) * 16.0f * zoom);
+    DrawPeripheralsBlock(draw_list, mmio_pos, ImVec2(box_size.x, mmio_h),
+                        config.peripherals, h.active_peripheral_name,
+                        h.mmio_path, col_box, col_text, col_inactive,
+                        col_active, zoom);
 
     // 5. Draw Dynamic Signal Bus Wire paths (Only active buses draw
     // values/lines)
@@ -954,7 +1145,7 @@ inline void UI_SystemSchematic(CPU &cpu, GUIState &gui) {
     }
 
     DrawSignalBuses(draw_list, cpu, gui, reg_pos, reg_file_w, reg_file_h,
-                    ctrl_pos, mem_pos, mmio_pos, alu_cx, alu_top_y,
+                    ctrl_pos, mem_pos, mmio_pos, mmio_h, alu_cx, alu_top_y,
                     alu_poly_out, pc_y, db_reg_y, reg_drawn_y, col_inactive,
                     col_abus, col_dbus, col_irbus, col_alubus, col_active);
 

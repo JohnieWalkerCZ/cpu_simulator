@@ -44,11 +44,13 @@ struct BusHighlighter {
     std::string alu_a_val = "";
     std::string alu_b_val = "";
     std::string alu_out_val = "";
+    std::string active_peripheral_name = "";
 
     bool alu_a_is_reg = true;
     bool alu_b_is_reg = true;
     int alu_a_reg_row = 2;
     int alu_b_reg_row = 3;
+    bool branch_taken = true;
     DataBusRoute data_bus_route = DataBusRoute::INACTIVE;
 
     void decay(float delta_time, float decay_rate = 3.0f) {
@@ -77,6 +79,12 @@ struct CPUSnapshot {
     Executor::ExecutorSnapshot executor_state;
 };
 
+struct StackFrameState {
+    bool initialized = false;
+    uint64_t last_sp = 0;
+    std::vector<uint64_t> frame_boundaries; // assumes a descending stack
+};
+
 struct GUIState {
     bool is_running = false;
     float clock_speed = 2.0f;
@@ -101,6 +109,7 @@ struct GUIState {
 
     UITheme active_theme = UITheme::MODERN_DARK;
     BusHighlighter highlighter;
+    StackFrameState stack_frames;
 };
 
 struct PeripheralsState {
@@ -218,6 +227,7 @@ inline void UpdateHighlights(CPU &cpu, BusHighlighter &h, float delta_time) {
                 h.alu_b_is_reg = true;
                 h.alu_a_reg_row = 2;
                 h.alu_b_reg_row = 3;
+                h.branch_taken = true;
 
                 // Inspect active operand types (Registers vs Immediates) for
                 // line routing
@@ -327,10 +337,12 @@ inline void UpdateHighlights(CPU &cpu, BusHighlighter &h, float delta_time) {
                                            : DataBusRoute::REG_TO_MEM;
                     uint64_t addr = exec.get_last_addr_val();
                     bool is_peripheral = false;
+                    h.active_peripheral_name.clear();
                     for (const auto &p : config.peripherals) {
                         if (addr >= p.address_start && addr <= p.address_end) {
                             h.mmio_path = 1.0f;
                             is_peripheral = true;
+                            h.active_peripheral_name = p.name;
                             break;
                         }
                     }
@@ -341,14 +353,100 @@ inline void UpdateHighlights(CPU &cpu, BusHighlighter &h, float delta_time) {
                     } else {
                         h.ctrl_mem_bus = 1.0f; // Target Memory Control Select
                     }
+                } else if (uop->action == "port_read" ||
+                           uop->action == "port_write") {
+                    // Ports use Memory::port_regions_, a namespace separate
+                    // from peripherals' memory-mapped ranges, so we can't
+                    // attribute this to a specific peripheral by address.
+                    h.reg_file_path = 1.0f;
+                    h.ctrl_reg_bus = 1.0f;
+                    h.mmio_path = 1.0f;
+                    h.ctrl_periph_bus = 1.0f;
+                    h.active_peripheral_name.clear();
+                } else if (uop->action == "coproc_read" ||
+                           uop->action == "coproc_write") {
+                    // Coprocessor registers live inside RegisterFile itself
+                    // (read_coproc/write_coproc) -- never touches memory or
+                    // peripherals.
+                    h.reg_file_path = 1.0f;
+                    h.ctrl_reg_bus = 1.0f;
+                    h.data_bus = 1.0f;
+                    h.data_bus_route = DataBusRoute::REG_TO_REG;
                 } else if (uop->action == "branch") {
-                    h.address_bus = 1.0f;
-                    h.data_bus_route = DataBusRoute::INACTIVE;
+                    bool taken = true;
+                    if (uop->args.count("condition")) {
+                        std::string c_str = uop->args.at("condition");
+                        bool invert = (!c_str.empty() && c_str[0] == '!');
+                        std::string search_type =
+                            invert ? c_str.substr(1) : c_str;
+
+                        int bit_pos = -1;
+                        for (const auto &f_def : config.alu_flags) {
+                            if (f_def.type == search_type) {
+                                bit_pos = f_def.bit;
+                                break;
+                            }
+                        }
+                        if (bit_pos == -1) {
+                            for (const auto &f_def : config.alu_flags) {
+                                if (f_def.name == search_type) {
+                                    bit_pos = f_def.bit;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (bit_pos != -1) {
+                            int flags_idx = regs.find_by_role("status_flags");
+                            uint64_t f_register =
+                                (flags_idx != -1) ? regs.read(flags_idx) : 0;
+                            bool is_set = (f_register >> bit_pos) & 1;
+                            taken = invert ? !is_set : is_set;
+                        }
+                    }
+                    h.branch_taken = taken;
                     h.ctrl_reg_bus = 1.0f; // Directly modifying PC Register
+                    h.data_bus_route = DataBusRoute::INACTIVE;
+                    if (taken)
+                        h.address_bus = 1.0f;
                 }
             }
         }
     }
+}
+
+// Derives call-frame boundaries purely from $SP's movement between frames, with
+// no dependency on instruction names -- a config can name its call/return
+// instructions anything (or have none at all, see tiny4.json). Assumes a
+// descending stack (SP decreases on push), true of every shipped config and
+// the overwhelming majority of real ISAs.
+inline void UpdateStackFrameTracking(CPU &cpu, GUIState &gui) {
+    auto &regs = cpu.get_registers();
+    int sp_idx = regs.find_by_role("stack_pointer");
+    if (sp_idx == -1)
+        sp_idx = regs.find_by_role("sp");
+
+    auto &sf = gui.stack_frames;
+    if (sp_idx == -1) {
+        sf.initialized = false;
+        return;
+    }
+
+    uint64_t sp = regs.read(sp_idx);
+    if (!sf.initialized) {
+        sf.last_sp = sp;
+        sf.frame_boundaries.clear();
+        sf.initialized = true;
+        return;
+    }
+
+    if (sp < sf.last_sp) {
+        sf.frame_boundaries.push_back(sf.last_sp);
+    } else if (sp > sf.last_sp) {
+        while (!sf.frame_boundaries.empty() && sp >= sf.frame_boundaries.back())
+            sf.frame_boundaries.pop_back();
+    }
+    sf.last_sp = sp;
 }
 
 inline void ApplyTheme(UITheme theme) {

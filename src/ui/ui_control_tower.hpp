@@ -64,6 +64,7 @@ inline void UI_ControlTower(CPU &cpu, GUIState &state,
     ImGui::SameLine();
     if (ImGui::Button("RESET")) {
         cpu.reset();
+        state.stack_frames = StackFrameState();
         ResetPeripheralsState(cpu.get_config(), p_state);
         state.cpu_error_message = "";
         state.history.clear();

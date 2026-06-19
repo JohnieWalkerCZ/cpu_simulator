@@ -5,6 +5,7 @@
 #include "ui/ui_cpu.hpp"
 #include "ui/ui_memory.hpp"
 #include "ui/ui_peripherals.hpp"
+#include "ui/ui_stack_frame_explorer.hpp"
 #include <SDL.h>
 #include <SDL_opengl.h>
 #include <iostream>
@@ -44,13 +45,6 @@ int main(int argc, char **argv) {
     ImGui_ImplSDL2_InitForOpenGL(window, gl_context);
     ImGui_ImplOpenGL3_Init("#version 130");
 
-    ImGui_ImplOpenGL3_NewFrame();
-    GLuint font_texture_id = *reinterpret_cast<GLuint *>(&io.Fonts->TexID);
-    glBindTexture(GL_TEXTURE_2D, font_texture_id);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glBindTexture(GL_TEXTURE_2D, 0);
-
     GUIState gui;
     ApplyTheme(gui.active_theme);
     bool done = false;
@@ -70,6 +64,7 @@ int main(int argc, char **argv) {
         last_ticks = current_ticks;
 
         UpdateHighlights(cpu, gui.highlighter, delta_time);
+        UpdateStackFrameTracking(cpu, gui);
 
         if (gui.is_running && !cpu.is_halted() &&
             gui.cpu_error_message.empty()) {
@@ -118,6 +113,7 @@ int main(int argc, char **argv) {
         UI_RegisterFile(cpu, gui); // Pass GUIState
         UI_ALUMonitor(cpu);
         UI_MemoryView(cpu, gui);
+        UI_StackFrameExplorer(cpu, gui);
         UI_FlashROMView(cpu, gui);
         UI_MicrocodePipeline(cpu);
         UI_Assembler(cpu, gui, p_state);
