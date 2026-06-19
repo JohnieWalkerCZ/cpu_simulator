@@ -232,9 +232,10 @@ The `peripherals` array allows defining custom hardware components that interact
     *   **`name`** (`string`): A unique name for this peripheral.
     *   **`type`** (`string`): The type of peripheral. Supported types include:
         *   `"text_display"`: Simulates a simple serial console output.
-        *   `"grid_display"`: Simulates an LED matrix or similar grid display.
-        *   `"input"`: Simulates an input device, allowing host interaction (e.g., key presses).
+        *   `"grid_display"`: Renders an LED matrix / grid display widget in the UI.
+        *   `"input"`: Renders a host key-press input widget in the UI.
         *   `"declarative"`: A highly flexible peripheral whose behavior is defined by AST logic.
+        *   **Note:** Only `"text_display"` and `"declarative"` are currently wired into the memory-mapped I/O bus (via `Memory::map_io_region`), so a running program can actually read/write them at `address_start`-`address_end`. `"grid_display"` and `"input"` currently exist only as UI widgets in the I/O Peripherals panel (backed by local UI state) and are not yet connected to CPU memory reads/writes.
     *   **`address_start`** (`string` or `integer`): The starting MMIO address for this peripheral. Supports full **64-bit address limits**.
     *   **`address_end`** (`string` or `integer`): The ending MMIO address for this peripheral. Supports full **64-bit address limits**.
     *   **`parameters`** (`object`, optional): A key-value map of configuration parameters for certain peripheral types (e.g., `"width"` for a `"grid_display"`).
@@ -272,6 +273,6 @@ The expressions used in `"condition"`, `"expr"`, and function arguments follow a
 *   **Operators:** `+`, `-`, `*`, `/`, `%`, `&`, `|`, `^`, `<<`, `>>`, `==`, `!=`, `>=`, `<=`, `>`, `<`, `&&`, `||`, `!`, `~` (unary).
 *   **Primary Expressions:**
     *   Literals (decimal, hex `0x...`, binary `0b...`)
-    *   Function calls (e.g., `sys_read(0x1000)`)
+    *   Function calls usable anywhere inside an expression, returning a value: `sys_read(addr)` (reads a byte from CPU memory) and `host_pop_char()` (pops one buffered host input character via the peripheral's `host_pop_` hook). These are distinct from the `"call"` AST node type above, which invokes side-effecting functions (`trigger_interrupt`, `sys_write`, `host_print`) and discards any return value.
     *   Identifiers (register names, internal state names, `value` context)
     *   Parenthesized expressions `(...)`

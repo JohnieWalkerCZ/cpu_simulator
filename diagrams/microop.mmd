@@ -17,7 +17,7 @@ flowchart TD
     %% Branch
     ActionSwitch -->|branch| Branch_Action[branch]:::execute
     Branch_Action --> Br_1{Check Branch Condition}:::lookup
-    Br_1 -->|Z, C, V, N, P, or !inverts| Br_2{Condition Met?}:::execute
+    Br_1 -->|Any configured flag name/type, e.g. Z, C, O, N, or !inverts| Br_2{Condition Met?}:::execute
     Br_2 -->|Yes| Br_Write[Set PC target & set pc_modified_ = true]:::store
     Br_2 -->|No| Br_Nop[Proceed without modifying PC]:::execute
 

@@ -34,7 +34,7 @@ The simulator includes a dynamic multi-pass assembler, a microcoded instruction 
 * Instructs the execution engine via a micro-operation list including `copy`, `alu`, `mem_read`, `mem_write`, `port_read`, `port_write`, `coproc_read`, `coproc_write`, `branch`, and `halt`.
 * Supports both **dynamic execution** (one micro-op per clock cycle, stalling for multi-cycle ALU operations) and **strict instruction-level latency overrides**.
 * Latency overrides mathematically distribute micro-operation execution: compressing multiple side effects into fewer clock cycles (down to a single-cycle execution phase) or padding execution with pipeline stalls to match exact hardware timing specifications.
-* Implements vectored hardware interrupts with automatic hardware stack saving and restoring.
+* Implements vectored hardware interrupts: on trigger, the executor automatically pushes the return PC to the stack and vectors to the handler address; the handler returns via a normal `RET` instruction, the same as any subroutine call.
 
 ### 6. Declarative MMIO Peripherals
 * Define functional hardware devices directly in the JSON file.
@@ -50,15 +50,20 @@ The simulator includes a dynamic multi-pass assembler, a microcoded instruction 
 ├── CMakeLists.txt                  # Build configuration for CMake
 ├── configs                         # JSON CPU configuration files
 │   ├── 8bit.json
-│   ├── test.json
+│   ├── 8bit_harvard.json
+│   ├── 16bit.json
 │   └── tiny4.json
 ├── CONFIGURATION.md                # Configuration reference manual
 ├── diagrams                        # Architecture and execution diagrams
 │   ├── classes.mmd                 # Class diagram
+│   ├── classes.png
 │   ├── complete.mmd                # System overview flowchart
+│   ├── complete.png
 │   ├── executor.mmd                # Executor state machine
+│   ├── executor.png
 │   ├── generate_images.sh          # Script to convert .mmd to .png
 │   ├── microop.mmd                 # Micro-operation flowchart
+│   └── microop.png
 ├── README.md                       # Main manual and build guide
 ├── src                             # Source code
 │   ├── core                        # Core simulator engine
@@ -86,7 +91,19 @@ The simulator includes a dynamic multi-pass assembler, a microcoded instruction 
 │   │   └── registers               # Register file (aliasing, masks, offsets)
 │   │       ├── register_file.cpp
 │   │       └── register_file.hpp
-│   └── main.cpp                    # ImGui-based desktop visual dashboard
+│   ├── ui                          # ImGui dashboard panels
+│   │   ├── ui_alu_monitor.hpp
+│   │   ├── ui_assembler.hpp
+│   │   ├── ui_common.hpp           # Shared GUIState, snapshots, bus highlighting
+│   │   ├── ui_control_tower.hpp
+│   │   ├── ui_cpu.hpp
+│   │   ├── ui_cpu_pointlist.hpp
+│   │   ├── ui_memory.hpp
+│   │   ├── ui_microcode_pipeline.hpp
+│   │   ├── ui_peripherals.hpp
+│   │   ├── ui_register_file.hpp
+│   │   └── ui_system_schematic.hpp
+│   └── main.cpp                    # SDL2/OpenGL/ImGui entry point & main loop
 └── tests                           # Unit and integration test suites
     ├── test_alu_operations.cpp
     ├── test_assembler.cpp
