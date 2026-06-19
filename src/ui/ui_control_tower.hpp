@@ -1,5 +1,6 @@
 #pragma once
 #include "ui_common.hpp"
+#include <cstdint>
 #include <exception>
 
 inline void UI_ControlTower(CPU &cpu, GUIState &state,
@@ -17,7 +18,9 @@ inline void UI_ControlTower(CPU &cpu, GUIState &state,
     ImGui::SameLine();
     if (ImGui::Button("STEP INST") && state.cpu_error_message == "")
         try {
+            CaptureSnapshot(cpu, state);
             cpu.step();
+            state.last_breakpoint_hit = (uint64_t)-1;
         } catch (const std::exception &e) {
             state.is_running = false;
             state.cpu_error_message = e.what();
@@ -26,17 +29,45 @@ inline void UI_ControlTower(CPU &cpu, GUIState &state,
     ImGui::SameLine();
     if (ImGui::Button("STEP UOP") && state.cpu_error_message == "")
         try {
+            CaptureSnapshot(cpu, state);
             cpu.step_uop();
+            state.last_breakpoint_hit = (uint64_t)-1;
         } catch (const std::exception &e) {
             state.is_running = false;
             state.cpu_error_message = e.what();
         }
 
     ImGui::SameLine();
+    bool history_empty = state.history.empty();
+    if (history_empty)
+        ImGui::BeginDisabled();
+
+    if (ImGui::Button("STEP BACK")) {
+        auto snap = state.history.back();
+        state.history.pop_back();
+
+        cpu.get_registers().set_physical_registers(snap.physical_registers);
+        cpu.get_memory().raw() = snap.memory;
+        cpu.get_memory().raw_instruction_mut() = snap.instruction_memory;
+
+        cpu.get_executor().restore_snapshot(snap.executor_state);
+
+        state.is_running = false;
+        state.cpu_error_message = "";
+        state.last_breakpoint_hit = (uint64_t)-1;
+        state.highlighter = BusHighlighter();
+    }
+
+    if (history_empty)
+        ImGui::EndDisabled();
+
+    ImGui::SameLine();
     if (ImGui::Button("RESET")) {
         cpu.reset();
         ResetPeripheralsState(cpu.get_config(), p_state);
         state.cpu_error_message = "";
+        state.history.clear();
+        state.last_breakpoint_hit = (uint64_t)-1;
     }
 
     if (!state.cpu_error_message.empty()) {

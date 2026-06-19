@@ -29,6 +29,13 @@ class RegisterFile {
 
     void reset();
 
+    const std::vector<uint64_t> &get_physical_registers() const {
+        return registers_;
+    }
+    void set_physical_registers(const std::vector<uint64_t> &state) {
+        registers_ = state;
+    }
+
     uint64_t read_coproc(int cp_id, int reg_id) const;
     void write_coproc(int cp_id, int reg_id, uint64_t value);
 

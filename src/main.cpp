@@ -76,21 +76,38 @@ int main(int argc, char **argv) {
             double current_time = SDL_GetTicks() / 1000.0;
             double interval = 1.0 / gui.clock_speed;
 
-            if (current_time - gui.last_step_time >= interval) {
-                try {
-                    if (gui.run_by_uop) {
-                        cpu.step_uop();
-                    } else {
-                        cpu.step();
+            while (current_time - gui.last_step_time >= interval &&
+                   gui.is_running && !cpu.is_halted()) {
+
+                if (cpu.get_executor().get_state() == ExecutionState::FETCH) {
+                    uint64_t pc = cpu.get_registers().get_pc();
+
+                    if (gui.breakpoints.count(pc) &&
+                        gui.last_breakpoint_hit != pc) {
+                        gui.is_running = false;
+                        gui.last_breakpoint_hit = pc;
+                        break;
                     }
+                    if (gui.last_breakpoint_hit != pc) {
+                        gui.last_breakpoint_hit = (uint64_t)-1;
+                    }
+
+                    CaptureSnapshot(cpu, gui);
+                }
+
+                try {
+                    if (gui.run_by_uop)
+                        cpu.step_uop();
+                    else
+                        cpu.step();
                 } catch (const std::exception &e) {
                     gui.is_running = false;
                     gui.cpu_error_message = e.what();
+                    break;
                 }
-                gui.last_step_time = current_time;
+                gui.last_step_time += interval;
             }
         }
-
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
@@ -104,7 +121,7 @@ int main(int argc, char **argv) {
         UI_FlashROMView(cpu, gui);
         UI_MicrocodePipeline(cpu);
         UI_Assembler(cpu, gui, p_state);
-        UI_ProgramView(cpu);
+        UI_ProgramView(cpu, gui);
         UI_Peripherals(cpu, cfg, p_state);
         UI_SystemSchematic(cpu, gui); // Pass GUIState
 

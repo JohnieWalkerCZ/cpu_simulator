@@ -52,6 +52,9 @@ class Memory {
     const std::vector<uint8_t> &raw_instruction() const {
         return instruction_memory_;
     };
+
+    std::vector<uint8_t> &raw_instruction_mut() { return instruction_memory_; }
+
     bool is_harvard() const { return arch_ == MemoryArch::Harvard; };
 
   private:

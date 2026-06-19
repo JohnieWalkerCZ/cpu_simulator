@@ -1,0 +1,369 @@
+{
+  "name": "16-Bit RISC",
+  "data_bus": { "width": 16 },
+  "address_bus": { "width": 16 },
+  "memory": { 
+    "size": 65536,
+    "architecture": "von_neumann",
+    "endianness": "little",
+    "segments": [
+      { "name": "ROM",   "start": "0x0000", "end": "0x7FFF", "R": true, "W": false, "X": true },
+      { "name": "RAM",   "start": "0x8000", "end": "0xEFFF", "R": true, "W": true,  "X": false },
+      { "name": "MMIO",  "start": "0xF000", "end": "0xFDFF", "R": true, "W": true,  "X": false },
+      { "name": "STACK", "start": "0xFE00", "end": "0xFFFF", "R": true, "W": true,  "X": false }
+    ]
+  },
+  "registers": {
+    "general_purpose": [
+      { 
+        "name": "R0", "width": 16, "initial": 0,
+        "sub_registers": [
+          { "name": "R0H", "width": 8, "offset": 8 },
+          { "name": "R0L", "width": 8, "offset": 0 }
+        ]  
+      },
+      { 
+        "name": "R1", "width": 16, "initial": 0,
+        "sub_registers": [
+          { "name": "R1H", "width": 8, "offset": 8 },
+          { "name": "R1L", "width": 8, "offset": 0 }
+        ]  
+      },
+      { "name": "R2", "width": 16, "initial": 0 },
+      { "name": "R3", "width": 16, "initial": 0 },
+      { "name": "R4", "width": 16, "initial": 0 },
+      { "name": "R5", "width": 16, "initial": 0 },
+      { "name": "R6", "width": 16, "initial": 0 },
+      { "name": "R7", "width": 16, "initial": 0 }
+    ],
+    "special": [
+      { "name": "PC", "width": 16, "initial": 0, "role": "program_counter" },
+      { "name": "SP", "width": 16, "initial": 65534, "role": "stack_pointer" },
+      { "name": "FLAGS", "width": 16, "initial": 0, "role": "status_flags" }
+    ]
+  },
+  "alu": {
+    "flags": [
+      { "name": "Z", "bit": 0, "type": "zero" },
+      { "name": "C", "bit": 1, "type": "carry" },
+      { "name": "O", "bit": 2, "type": "overflow" },
+      { "name": "N", "bit": 3, "type": "negative" }
+    ],
+    "operations": [
+      { 
+        "name": "ADD", "code": 1, "expression": "a + b", 
+        "flag_rules": { "Z": "result_zero", "C": "carry_add", "O": "overflow_add", "N": "result_negative" } 
+      },
+      { 
+        "name": "SUB", "code": 2, "expression": "a - b", 
+        "flag_rules": { "Z": "result_zero", "C": "carry_sub", "O": "overflow_sub", "N": "result_negative" } 
+      },
+      { 
+        "name": "MUL", "code": 3, "expression": "a * b", "latency": 4, 
+        "flag_rules": { "Z": "result_zero", "N": "result_negative" } 
+      },
+      { 
+        "name": "DIV", "code": 4, "expression": "a / b", "latency": 8, 
+        "flag_rules": { "Z": "result_zero", "N": "result_negative" } 
+      },
+      { 
+        "name": "AND", "code": 5, "expression": "a & b", 
+        "flag_rules": { "Z": "result_zero", "N": "result_negative" } 
+      },
+      { 
+        "name": "OR",  "code": 6, "expression": "a | b", 
+        "flag_rules": { "Z": "result_zero", "N": "result_negative" } 
+      },
+      { 
+        "name": "XOR", "code": 7, "expression": "a ^ b", 
+        "flag_rules": { "Z": "result_zero", "N": "result_negative" } 
+      },
+      { 
+        "name": "SHL", "code": 8, "expression": "a << b", 
+        "flag_rules": { "Z": "result_zero", "N": "result_negative" } 
+      },
+      { 
+        "name": "SHR", "code": 9, "expression": "a >> b", 
+        "flag_rules": { "Z": "result_zero", "N": "result_negative" } 
+      },
+      { 
+        "name": "NOT", "code": 10, "expression": "~a", 
+        "flag_rules": { "Z": "result_zero", "N": "result_negative" } 
+      }
+    ]
+  },
+  "instruction_set": {
+    "instructions": [
+      {
+        "name": "NOP",
+        "opcode": 0,
+        "encoding": [0],
+        "microcode": [ { "action": "copy", "source": "$PC", "dest": "$PC" } ]
+      },
+      {
+        "name": "HLT",
+        "opcode": 255,
+        "encoding": [255],
+        "microcode": [ { "action": "halt" } ]
+      },
+      {
+        "name": "MOV",
+        "opcode": 16,
+        "encoding": [16, "dest", "src"],
+        "microcode": [ { "action": "copy", "source": "@src", "dest": "@dest" } ]
+      },
+      {
+        "name": "LDI",
+        "opcode": 17,
+        "encoding": [17, "dest", "imm16"],
+        "microcode": [ { "action": "copy", "source": "@imm16", "dest": "@dest" } ]
+      },
+      {
+        "name": "LOAD",
+        "opcode": 18,
+        "encoding": [18, "dest", "addr_reg"],
+        "microcode": [ { "action": "mem_read", "addr": "@addr_reg", "out": "@dest" } ]
+      },
+      {
+        "name": "STORE",
+        "opcode": 19,
+        "encoding": [19, "src", "addr_reg"],
+        "microcode": [ { "action": "mem_write", "addr": "@addr_reg", "data": "@src" } ]
+      },
+      {
+        "name": "ADD",
+        "opcode": 32,
+        "encoding": [32, "dest", "src"],
+        "microcode": [ { "action": "alu", "op": "ADD", "a": "@dest", "b": "@src", "out": "@dest", "update_flags": "true" } ]
+      },
+      {
+        "name": "ADDI",
+        "opcode": 33,
+        "encoding": [33, "dest", "imm16"],
+        "microcode": [ { "action": "alu", "op": "ADD", "a": "@dest", "b": "@imm16", "out": "@dest", "update_flags": "true" } ]
+      },
+      {
+        "name": "SUB",
+        "opcode": 34,
+        "encoding": [34, "dest", "src"],
+        "microcode": [ { "action": "alu", "op": "SUB", "a": "@dest", "b": "@src", "out": "@dest", "update_flags": "true" } ]
+      },
+      {
+        "name": "SUBI",
+        "opcode": 35,
+        "encoding": [35, "dest", "imm16"],
+        "microcode": [ { "action": "alu", "op": "SUB", "a": "@dest", "b": "@imm16", "out": "@dest", "update_flags": "true" } ]
+      },
+      {
+        "name": "MUL",
+        "opcode": 36,
+        "encoding": [36, "dest", "src"],
+        "microcode": [ { "action": "alu", "op": "MUL", "a": "@dest", "b": "@src", "out": "@dest", "update_flags": "true" } ]
+      },
+      {
+        "name": "AND",
+        "opcode": 48,
+        "encoding": [48, "dest", "src"],
+        "microcode": [ { "action": "alu", "op": "AND", "a": "@dest", "b": "@src", "out": "@dest", "update_flags": "true" } ]
+      },
+      {
+        "name": "OR",
+        "opcode": 49,
+        "encoding": [49, "dest", "src"],
+        "microcode": [ { "action": "alu", "op": "OR", "a": "@dest", "b": "@src", "out": "@dest", "update_flags": "true" } ]
+      },
+      {
+        "name": "XOR",
+        "opcode": 50,
+        "encoding": [50, "dest", "src"],
+        "microcode": [ { "action": "alu", "op": "XOR", "a": "@dest", "b": "@src", "out": "@dest", "update_flags": "true" } ]
+      },
+      {
+        "name": "SHL",
+        "opcode": 51,
+        "encoding": [51, "dest", "imm16"],
+        "microcode": [ { "action": "alu", "op": "SHL", "a": "@dest", "b": "@imm16", "out": "@dest", "update_flags": "true" } ]
+      },
+      {
+        "name": "SHR",
+        "opcode": 52,
+        "encoding": [52, "dest", "imm16"],
+        "microcode": [ { "action": "alu", "op": "SHR", "a": "@dest", "b": "@imm16", "out": "@dest", "update_flags": "true" } ]
+      },
+      {
+        "name": "JMP",
+        "opcode": 64,
+        "encoding": [64, "address"],
+        "microcode": [ { "action": "branch", "target": "@address" } ]
+      },
+      {
+        "name": "JZ",
+        "opcode": 65,
+        "encoding": [65, "address"],
+        "microcode": [ { "action": "branch", "condition": "Z", "target": "@address" } ]
+      },
+      {
+        "name": "JNZ",
+        "opcode": 66,
+        "encoding": [66, "address"],
+        "microcode": [ { "action": "branch", "condition": "!Z", "target": "@address" } ]
+      },
+      {
+        "name": "JC",
+        "opcode": 67,
+        "encoding": [67, "address"],
+        "microcode": [ { "action": "branch", "condition": "C", "target": "@address" } ]
+      },
+      {
+        "name": "PUSH",
+        "opcode": 80,
+        "encoding": [80, "src"],
+        "microcode": [
+          { "action": "alu", "op": "SUB", "a": "$SP", "b": "#WORD_SIZE", "out": "$SP" },
+          { "action": "mem_write", "addr": "$SP", "data": "@src" }
+        ]
+      },
+      {
+        "name": "POP",
+        "opcode": 81,
+        "encoding": [81, "dest"],
+        "microcode": [
+          { "action": "mem_read", "addr": "$SP", "out": "@dest" },
+          { "action": "alu", "op": "ADD", "a": "$SP", "b": "#WORD_SIZE", "out": "$SP" }
+        ]
+      },
+      {
+        "name": "CALL",
+        "opcode": 82,
+        "encoding": [82, "address"],
+        "microcode": [
+          { "action": "alu", "op": "SUB", "a": "$SP", "b": "#ADDR_SIZE", "out": "$SP" },
+          { "action": "mem_write", "addr": "$SP", "data": "$NEXT_PC" },
+          { "action": "branch", "target": "@address" }
+        ]
+      },
+      {
+        "name": "RET",
+        "opcode": 83,
+        "encoding": [83],
+        "microcode": [
+          { "action": "mem_read", "addr": "$SP", "out": "$PC" },
+          { "action": "alu", "op": "ADD", "a": "$SP", "b": "#ADDR_SIZE", "out": "$SP" }
+        ]
+      }
+    ]
+  },
+  "peripherals": [
+    {
+      "name": "Terminal",
+      "type": "text_display",
+      "address_start": "0xF000",
+      "address_end": "0xF0FF"
+    },
+    {
+      "name": "SystemTimer",
+      "type": "declarative",
+      "address_start": "0xF100",
+      "address_end": "0xF100",
+      "registers": [
+        { "name": "TICKS", "offset": 0, "size_bytes": 2, "access": "r", "initial": 0 }
+      ],
+      "tick_behavior": [
+        { "type": "assign", "target": "TICKS", "expr": "TICKS + 1" }
+      ]
+    },
+    {
+      "name": "KeyboardBuffer",
+      "type": "input",
+      "address_start": "0xF102",
+      "address_end": "0xF102"
+    },
+    {
+      "name": "SecureDMA_and_RNG",
+      "type": "declarative",
+      "address_start": "0xF200",
+      "address_end": "0xF20F",
+      "internal_state": {
+        "CURRENT_SRC": 0,
+        "CURRENT_DST": 0,
+        "REMAINING": 0,
+        "ACTIVE": 0,
+        "TEMP_DATA": 0,
+        "LFSR": 44257
+      },
+      "registers": [
+        { "name": "SRC_ADDR", "offset": 0, "size_bytes": 2, "access": "rw", "initial": 0 },
+        { "name": "DST_ADDR", "offset": 2, "size_bytes": 2, "access": "rw", "initial": 0 },
+        { "name": "TRANSFER_SIZE", "offset": 4, "size_bytes": 2, "access": "rw", "initial": 0 },
+        { "name": "XOR_KEY", "offset": 6, "size_bytes": 2, "access": "rw", "initial": 0 },
+        { 
+          "name": "CONTROL", "offset": 8, "size_bytes": 2, "access": "rw", "initial": 0,
+          "on_write": [
+            { "type": "assign", "target": "CONTROL", "expr": "value" },
+            {
+              "type": "if",
+              "condition": "(value & 1) == 1",
+              "then": [
+                { "type": "assign", "target": "CURRENT_SRC", "expr": "SRC_ADDR" },
+                { "type": "assign", "target": "CURRENT_DST", "expr": "DST_ADDR" },
+                { "type": "assign", "target": "REMAINING", "expr": "TRANSFER_SIZE" },
+                { "type": "assign", "target": "STATUS", "expr": "1" },
+                { "type": "assign", "target": "ACTIVE", "expr": "1" }
+              ]
+            }
+          ]
+        },
+        { "name": "STATUS", "offset": 10, "size_bytes": 2, "access": "r", "initial": 0 },
+        {
+          "name": "RNG_DATA", "offset": 12, "size_bytes": 2, "access": "r", "initial": 0,
+          "on_read": [
+            { "type": "assign", "target": "LFSR", "expr": "(LFSR >> 1) ^ ((LFSR & 1) * 0xB400)" },
+            { "type": "assign", "target": "RNG_DATA", "expr": "LFSR" }
+          ]
+        }
+      ],
+      "tick_behavior": [
+        {
+          "type": "if",
+          "condition": "ACTIVE == 1",
+          "then": [
+            { "type": "assign", "target": "TEMP_DATA", "expr": "sys_read(CURRENT_SRC)" },
+            {
+              "type": "if",
+              "condition": "(CONTROL & 2) != 0",
+              "then": [ { "type": "assign", "target": "TEMP_DATA", "expr": "TEMP_DATA ^ XOR_KEY" } ]
+            },
+            { "type": "call", "func": "sys_write", "args": ["CURRENT_DST", "TEMP_DATA"] },
+            {
+              "type": "if",
+              "condition": "(CONTROL & 4) != 0",
+              "then": [
+                { "type": "assign", "target": "CURRENT_SRC", "expr": "CURRENT_SRC - 2" },
+                { "type": "assign", "target": "CURRENT_DST", "expr": "CURRENT_DST - 2" }
+              ],
+              "else": [
+                { "type": "assign", "target": "CURRENT_SRC", "expr": "CURRENT_SRC + 2" },
+                { "type": "assign", "target": "CURRENT_DST", "expr": "CURRENT_DST + 2" }
+              ]
+            },
+            { "type": "assign", "target": "REMAINING", "expr": "REMAINING - 2" },
+            {
+              "type": "if",
+              "condition": "REMAINING <= 0",
+              "then": [
+                { "type": "assign", "target": "ACTIVE", "expr": "0" },
+                { "type": "assign", "target": "STATUS", "expr": "2" },
+                { "type": "assign", "target": "CONTROL", "expr": "CONTROL & 0xFFFE" },
+                {
+                  "type": "if",
+                  "condition": "(CONTROL & 8) != 0",
+                  "then": [ { "type": "call", "func": "trigger_interrupt", "args": ["0x0010"] } ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

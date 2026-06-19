@@ -44,7 +44,7 @@ inline void UI_MemoryView(CPU &cpu, GUIState &gui) {
     ImGui::End();
 }
 
-inline void UI_ProgramView(CPU &cpu) {
+inline void UI_ProgramView(CPU &cpu, GUIState &gui) {
     ImGui::Begin("Program Execution");
 
     if (cpu.get_code().empty()) {
@@ -164,6 +164,24 @@ inline void UI_ProgramView(CPU &cpu) {
         }
 
         bool is_current_pc = (curr_addr == pc);
+
+        ImGui::PushID(curr_addr);
+        bool is_bp = gui.breakpoints.count(curr_addr);
+        if (is_bp)
+            ImGui::TextColored(ImVec4(1.0f, 0.2f, 0.2f, 1.0f), " (O) ");
+        else
+            ImGui::TextDisabled("  -  ");
+
+        if (ImGui::IsItemClicked()) {
+            if (is_bp)
+                gui.breakpoints.erase(curr_addr);
+            else
+                gui.breakpoints.insert(curr_addr);
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Toggle Breakpoint");
+        ImGui::PopID();
+        ImGui::SameLine();
 
         if (is_current_pc) {
             ImGui::PushStyleColor(ImGuiCol_Text,

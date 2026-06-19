@@ -3,8 +3,10 @@
 #include "imgui.h"
 #include <SDL.h>
 #include <cmath>
+#include <iostream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // Forward Declarations of Peripherals management functions (defined in
@@ -68,6 +70,13 @@ struct BusHighlighter {
     }
 };
 
+struct CPUSnapshot {
+    std::vector<uint64_t> physical_registers;
+    std::vector<uint8_t> memory;
+    std::vector<uint8_t> instruction_memory;
+    Executor::ExecutorSnapshot executor_state;
+};
+
 struct GUIState {
     bool is_running = false;
     float clock_speed = 2.0f;
@@ -79,6 +88,10 @@ struct GUIState {
 
     float zoom = 1.0f;
     ImVec2 pan = ImVec2(0.0f, 0.0f);
+
+    std::deque<CPUSnapshot> history;
+    std::unordered_set<uint64_t> breakpoints;
+    uint64_t last_breakpoint_hit = (uint64_t)-1;
 
     char asm_source[8 * 1000] = "HLT";
     std::string asm_status = "";
@@ -679,8 +692,6 @@ inline void DrawFlowArrow(ImDrawList *draw_list, ImVec2 start, ImVec2 end,
     }
 }
 
-// Added: Resolves highest level physical parent register width for aliased
-// structures
 inline int GetRegisterGridWidth(const RegisterDef &def,
                                 const std::vector<RegisterDef> &defs) {
     int curr_idx = def.parent_index;
@@ -693,4 +704,17 @@ inline int GetRegisterGridWidth(const RegisterDef &def,
         return defs[ancestor_idx].width;
     }
     return def.width;
+}
+
+inline void CaptureSnapshot(CPU &cpu, GUIState &gui) {
+    CPUSnapshot snap;
+    snap.physical_registers = cpu.get_registers().get_physical_registers();
+    snap.memory = cpu.get_memory().raw();
+    snap.instruction_memory = cpu.get_memory().raw_instruction();
+    snap.executor_state = cpu.get_executor().take_snapshot();
+
+    gui.history.push_back(snap);
+    if (gui.history.size() > 1000) {
+        gui.history.pop_front();
+    }
 }

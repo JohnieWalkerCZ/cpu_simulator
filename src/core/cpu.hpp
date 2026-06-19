@@ -21,7 +21,8 @@ class CPU {
     RegisterFile &get_registers() { return regs_; }
     Memory &get_memory() { return mem_; }
     ALU &get_alu() { return alu_; }
-    const Executor &get_executor() { return executor_; }
+    Executor &get_executor() { return executor_; }
+    const Executor &get_executor() const { return executor_; }
 
     const Config &get_config() const { return cfg_; }
 

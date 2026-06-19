@@ -258,7 +258,7 @@ inline void DrawRegisterFileBlock(
 
         // Draw horizontal row separators strictly in the text margin area
         if (i > 0) {
-            draw_list->AddLine(r_min, ImVec2(reg_pos.x + 115.0f, r_min.y),
+            draw_list->AddLine(r_min, ImVec2(reg_pos.x + reg_file_w, r_min.y),
                                col_inactive, 1.0f);
         }
 
@@ -961,6 +961,45 @@ inline void UI_SystemSchematic(CPU &cpu, GUIState &gui) {
     DrawControlBuses(draw_list, reg_pos, reg_file_h, ctrl_pos, box_size, alu_cx,
                      alu_top_y, mmio_pos, mem_pos, gui, col_ctrl, col_inactive,
                      col_active);
+    if (cpu.is_halted()) {
+        float pulse =
+            0.5f + 0.5f * sin(static_cast<float>(SDL_GetTicks() % 1000) /
+                              1000.0f * 2.0f * 3.1415926535f);
+
+        ImU32 col_halt_text =
+            IM_COL32(255, 50, 50, static_cast<int>(150 + 100 * pulse));
+        ImU32 col_halt_border =
+            IM_COL32(255, 0, 0, static_cast<int>(200 * pulse));
+        ImU32 col_halt_bg = IM_COL32(40, 0, 0, 220);
+
+        std::string halt_text = " SYSTEM HALTED ";
+        float text_scale = gui.zoom * 1.5f;
+        ImVec2 text_size = ImGui::CalcTextSize(halt_text.c_str());
+        text_size.x *= text_scale;
+        text_size.y *= text_scale;
+
+        float center_y = ctrl_pos.y + box_size.y +
+                         (alu_top_y - (ctrl_pos.y + box_size.y)) / 2.0f;
+        ImVec2 halt_center = ImVec2(alu_cx, center_y);
+
+        ImVec2 p_min =
+            ImVec2(halt_center.x - text_size.x / 2.0f - 15.0f * gui.zoom,
+                   halt_center.y - text_size.y / 2.0f - 10.0f * gui.zoom);
+        ImVec2 p_max =
+            ImVec2(halt_center.x + text_size.x / 2.0f + 15.0f * gui.zoom,
+                   halt_center.y + text_size.y / 2.0f + 10.0f * gui.zoom);
+
+        draw_list->AddRectFilled(p_min, p_max, col_halt_bg, 8.0f * gui.zoom);
+        draw_list->AddRect(p_min, p_max, col_halt_border, 8.0f * gui.zoom, 0,
+                           3.0f * gui.zoom);
+
+        ImVec2 text_pos =
+            ImVec2(std::floor(halt_center.x - text_size.x / 2.0f),
+                   std::floor(halt_center.y - text_size.y / 2.0f));
+
+        draw_list->AddText(ImGui::GetFont(), ImGui::GetFontSize() * text_scale,
+                           text_pos, col_halt_text, halt_text.c_str());
+    }
 
     ImGui::SetCursorScreenPos(reg_pos);
     if (ImGui::InvisibleButton("##RegFileFocusBtn",
