@@ -25,6 +25,7 @@ inline void UI_Assembler(CPU &cpu, GUIState &gui, PeripheralsState &p_state) {
                     assembler.assemble(std::string(gui.asm_source), 0);
                 cpu.load_program(machine_code, 0);
                 cpu.reset();
+                gui.stack_frames = StackFrameState();
                 ResetPeripheralsState(cpu.get_config(), p_state);
 
                 gui.asm_status = "Success! Compiled " +
@@ -46,6 +47,14 @@ inline void UI_Assembler(CPU &cpu, GUIState &gui, PeripheralsState &p_state) {
 
         ImGui::TableSetColumnIndex(1);
         ImGui::Text("Architecture Reference Guide");
+        ImGui::Separator();
+
+        ImGui::TextDisabled("Assembler Directives:");
+        ImGui::BulletText(".equ NAME, VALUE   - define a named constant");
+        ImGui::BulletText(".db v1, v2, ...    - emit raw bytes");
+        ImGui::BulletText(".dw v1, v2, ...    - emit 16-bit words");
+        ImGui::BulletText(".ascii \"text\"      - emit ASCII bytes (no "
+                          "terminator)");
         ImGui::Separator();
 
         ImGui::BeginChild("InstGuideScroll", ImVec2(0, 0), false,

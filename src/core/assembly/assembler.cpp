@@ -40,9 +40,35 @@ Assembler::Assembler(const Config &config) : config_(config) {
 std::vector<std::string> Assembler::tokenize(const std::string &line) {
     std::vector<std::string> tokens;
     std::string current;
+    bool in_quotes = false;
 
     for (size_t i = 0; i < line.size(); ++i) {
         char c = line[i];
+
+        if (in_quotes) {
+            if (c == '\\' && i + 1 < line.size() &&
+                (line[i + 1] == '"' || line[i + 1] == '\\')) {
+                current += line[i + 1];
+                ++i;
+            } else if (c == '"') {
+                in_quotes = false;
+                tokens.push_back(current);
+                current.clear();
+            } else {
+                current += c;
+            }
+            continue;
+        }
+
+        if (c == '"') {
+            if (!current.empty()) {
+                tokens.push_back(current);
+                current.clear();
+            }
+            in_quotes = true;
+            continue;
+        }
+
         if (c == ';' ||
             (c == '/' && i + 1 < line.size() && line[i + 1] == '/')) {
             break;
@@ -56,6 +82,8 @@ std::vector<std::string> Assembler::tokenize(const std::string &line) {
             current += c;
         }
     }
+    if (in_quotes)
+        throw std::runtime_error("Unterminated string literal: " + line);
     if (!current.empty())
         tokens.push_back(current);
     return tokens;
@@ -94,18 +122,25 @@ std::vector<uint8_t> Assembler::assemble(const std::string &source,
     std::istringstream iss(source);
     std::string line;
 
+    enum class DirectiveKind { None, DefineBytes, DefineWords, DefineAscii };
     struct ParsedLine {
         std::vector<std::string> tokens;
         const Instruction *inst = nullptr;
         int total_bits = 0;
         int units = 0;
         uint64_t address = 0;
+        DirectiveKind directive = DirectiveKind::None;
+    };
+
+    auto check_duplicate_symbol = [&](const std::string &name) {
+        if (labels.find(name) != labels.end())
+            throw std::runtime_error("Duplicate symbol: " + name);
     };
 
     std::vector<ParsedLine> parsed_lines;
     uint64_t current_addr = load_address;
 
-    // Pass 1: Resolve labels and calculate instruction sizes
+    // Pass 1: Resolve labels/constants and calculate line sizes
     while (std::getline(iss, line)) {
         std::vector<std::string> tokens = tokenize(line);
         if (tokens.empty())
@@ -113,10 +148,55 @@ std::vector<uint8_t> Assembler::assemble(const std::string &source,
 
         if (tokens[0].back() == ':') {
             std::string label_name = tokens[0].substr(0, tokens[0].size() - 1);
+            check_duplicate_symbol(label_name);
             labels[label_name] = current_addr;
             tokens.erase(tokens.begin());
             if (tokens.empty())
                 continue;
+        }
+
+        if (!tokens[0].empty() && tokens[0][0] == '.') {
+            const std::string &directive = tokens[0];
+
+            if (directive == ".equ") {
+                if (tokens.size() != 3)
+                    throw std::runtime_error(
+                        "Invalid .equ syntax (expected: .equ NAME, VALUE): " +
+                        line);
+                check_duplicate_symbol(tokens[1]);
+                labels[tokens[1]] = parse_operand(tokens[2], labels);
+                continue;
+            }
+
+            if (directive == ".db" || directive == ".dw") {
+                if (tokens.size() < 2)
+                    throw std::runtime_error(directive +
+                                             " requires at least one value: " +
+                                             line);
+                int value_bytes = (directive == ".dw") ? 2 : 1;
+                uint64_t byte_count =
+                    static_cast<uint64_t>(tokens.size() - 1) * value_bytes;
+                DirectiveKind kind = (directive == ".dw")
+                                        ? DirectiveKind::DefineWords
+                                        : DirectiveKind::DefineBytes;
+                parsed_lines.push_back(
+                    {tokens, nullptr, 0, 0, current_addr, kind});
+                current_addr += byte_count;
+                continue;
+            }
+
+            if (directive == ".ascii") {
+                if (tokens.size() != 2)
+                    throw std::runtime_error(
+                        "Invalid .ascii syntax (expected: .ascii \"text\"): " +
+                        line);
+                parsed_lines.push_back({tokens, nullptr, 0, 0, current_addr,
+                                       DirectiveKind::DefineAscii});
+                current_addr += tokens[1].size();
+                continue;
+            }
+
+            throw std::runtime_error("Unknown directive: " + directive);
         }
 
         std::vector<OperandType> actual_signature;
@@ -166,6 +246,29 @@ std::vector<uint8_t> Assembler::assemble(const std::string &source,
     // Pass 2: Generate machine code
     std::vector<uint8_t> output;
     for (const auto &pline : parsed_lines) {
+        if (pline.directive != DirectiveKind::None) {
+            if (pline.directive == DirectiveKind::DefineAscii) {
+                for (unsigned char ch : pline.tokens[1])
+                    output.push_back(static_cast<uint8_t>(ch));
+            } else {
+                int width =
+                    (pline.directive == DirectiveKind::DefineWords) ? 16 : 8;
+                int bytes = width / 8;
+                bool is_little = (config_.endianness == "little");
+                uint64_t mask = (width >= 64) ? ~0ULL : (1ULL << width) - 1;
+
+                for (size_t i = 1; i < pline.tokens.size(); ++i) {
+                    uint64_t val = parse_operand(pline.tokens[i], labels) & mask;
+                    for (int b = 0; b < bytes; ++b) {
+                        int shift = is_little ? (b * 8) : ((bytes - 1 - b) * 8);
+                        output.push_back(
+                            static_cast<uint8_t>((val >> shift) & 0xFF));
+                    }
+                }
+            }
+            continue;
+        }
+
         uint64_t accum = 0;
         size_t op_idx = 1;
 
