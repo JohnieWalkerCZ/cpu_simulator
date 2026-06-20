@@ -1,4 +1,5 @@
 #pragma once
+#include "wide_int.hpp"
 #include <cstdint>
 #include <nlohmann/json.hpp>
 #include <nlohmann/json_fwd.hpp>
@@ -9,7 +10,7 @@
 struct RegisterDef {
     std::string name;
     int width;
-    uint64_t initial;
+    word_t initial;
     std::string role;
 
     bool is_alias = false;
@@ -18,6 +19,13 @@ struct RegisterDef {
     int absolute_bit_offset = 0;
 
     std::vector<int> bit_mapping;
+
+    // Precomputed by RegisterFile's constructor (not by the config loader):
+    // true when bit_mapping is a contiguous run of physical bits, letting
+    // read/write use a single shift-and-mask instead of looping bit by bit.
+    bool is_contiguous = false;
+    word_t bit_mask = 0;
+    int bit_shift = 0;
 
     bool is_coproc = false;
     int coproc_id = -1;
@@ -66,7 +74,7 @@ struct PeripheralRegisterDef {
     int offset;
     int size_bytes;
     std::string access;
-    uint64_t initial;
+    word_t initial;
     nlohmann::json on_read;
     nlohmann::json on_write;
 };
@@ -74,19 +82,19 @@ struct PeripheralRegisterDef {
 struct PeripheralDef {
     std::string name;
     std::string type;
-    uint64_t address_start;
-    uint64_t address_end;
+    word_t address_start;
+    word_t address_end;
     std::unordered_map<std::string, std::string> parameters;
 
     std::vector<PeripheralRegisterDef> registers;
-    std::unordered_map<std::string, uint64_t> internal_state;
+    std::unordered_map<std::string, word_t> internal_state;
     nlohmann::json tick_behavior;
 };
 
 struct MemorySegmentDef {
     std::string name;
-    uint64_t start;
-    uint64_t end;
+    word_t start;
+    word_t end;
     bool r, w, x;
 };
 
@@ -94,7 +102,7 @@ struct Config {
     std::string name;
     int data_width;
     int addr_width;
-    int memory_size;
+    word_t memory_size;
     std::string endianness = "little";
     std::string memory_architecture = "von_neumann";
 

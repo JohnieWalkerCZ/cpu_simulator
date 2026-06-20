@@ -13,7 +13,9 @@ inline void UI_Peripherals(CPU &cpu, const Config &config,
                                     ImGuiTreeNodeFlags_DefaultOpen)) {
 
             if (def.type == "text_display") {
-                ImGui::TextDisabled("Mapped to 0x%04llX", def.address_start);
+                ImGui::TextDisabled(
+                    "Mapped to %s",
+                    FormatHexValue(def.address_start, 16).c_str());
                 ImGui::BeginChild((def.name + "_scroll").c_str(),
                                   ImVec2(0, 100), true);
                 ImGui::TextUnformatted(
@@ -24,8 +26,10 @@ inline void UI_Peripherals(CPU &cpu, const Config &config,
             }
 
             else if (def.type == "grid_display") {
-                ImGui::TextDisabled("Mapped to 0x%04llX - 0x%04llX",
-                                    def.address_start, def.address_end);
+                ImGui::TextDisabled(
+                    "Mapped to %s - %s",
+                    FormatHexValue(def.address_start, 16).c_str(),
+                    FormatHexValue(def.address_end, 16).c_str());
                 int width = def.parameters.count("width")
                                 ? std::stoi(def.parameters.at("width"))
                                 : 8;
@@ -54,7 +58,9 @@ inline void UI_Peripherals(CPU &cpu, const Config &config,
             }
 
             else if (def.type == "input") {
-                ImGui::TextDisabled("Mapped to 0x%04llX", def.address_start);
+                ImGui::TextDisabled(
+                    "Mapped to %s",
+                    FormatHexValue(def.address_start, 16).c_str());
                 ImGui::Text("Press a key to send to CPU:");
                 if (ImGui::Button(" A "))
                     p_state.key_states[def.name] = 'A';
@@ -69,8 +75,10 @@ inline void UI_Peripherals(CPU &cpu, const Config &config,
             }
 
             else if (def.type == "declarative") {
-                ImGui::TextDisabled("Mapped to 0x%04llX - 0x%04llX",
-                                    def.address_start, def.address_end);
+                ImGui::TextDisabled(
+                    "Mapped to %s - %s",
+                    FormatHexValue(def.address_start, 16).c_str(),
+                    FormatHexValue(def.address_end, 16).c_str());
 
                 DeclarativePeripheral *active_dp = nullptr;
                 for (auto &dp : cpu.get_peripherals()) {
@@ -98,14 +106,16 @@ inline void UI_Peripherals(CPU &cpu, const Config &config,
                                             rdef.offset);
 
                                 ImGui::TableSetColumnIndex(1);
-                                uint64_t val = live_regs.count(rdef.name)
-                                                   ? live_regs.at(rdef.name)
-                                                   : 0;
+                                word_t val = live_regs.count(rdef.name)
+                                                ? live_regs.at(rdef.name)
+                                                : 0;
                                 ImGui::TextColored(
-                                    ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "0x%02X",
-                                    (unsigned int)val);
+                                    ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "%s",
+                                    FormatHexValue(val, rdef.size_bytes * 8)
+                                        .c_str());
                                 ImGui::SameLine();
-                                ImGui::TextDisabled("(%llu)", val);
+                                ImGui::TextDisabled(
+                                    "(%s)", word_to_dec_string(val).c_str());
                             }
                             ImGui::EndTable();
                         }
@@ -128,7 +138,8 @@ inline void UI_Peripherals(CPU &cpu, const Config &config,
                                 ImGui::TextDisabled("%s", var_name.c_str());
 
                                 ImGui::TableSetColumnIndex(1);
-                                ImGui::Text("%llu", val);
+                                ImGui::Text("%s",
+                                           word_to_dec_string(val).c_str());
                             }
                             ImGui::EndTable();
                         }
@@ -149,7 +160,7 @@ inline void InitializePeripherals(CPU &cpu, PeripheralsState &p_state) {
             p_state.console_buffers[def.name] = "";
             cpu.get_memory().map_io_region(
                 def.address_start, def.address_end, nullptr,
-                [&p_state, name = def.name](uint64_t address, uint64_t val) {
+                [&p_state, name = def.name](word_t address, word_t val) {
                     if (val == '\n' || val == '\r')
                         p_state.console_buffers[name] += '\n';
                     else if (val >= 32 && val <= 126)
@@ -174,11 +185,11 @@ inline void InitializePeripherals(CPU &cpu, PeripheralsState &p_state) {
 
                 cpu.get_memory().map_io_region(
                     def.address_start, def.address_end,
-                    [&dp, start = def.address_start](uint64_t addr) {
+                    [&dp, start = def.address_start](word_t addr) {
                         return dp.read(addr - start);
                     },
-                    [&dp, start = def.address_start](uint64_t addr,
-                                                     uint64_t val) {
+                    [&dp, start = def.address_start](word_t addr,
+                                                     word_t val) {
                         dp.write(addr - start, val);
                     });
             }

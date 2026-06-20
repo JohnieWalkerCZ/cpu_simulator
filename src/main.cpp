@@ -9,6 +9,8 @@
 #include <SDL.h>
 #include <SDL_opengl.h>
 #include <iostream>
+#include <mutex>
+#include <thread>
 
 int main(int argc, char **argv) {
     if (argc < 2) {
@@ -49,6 +51,12 @@ int main(int argc, char **argv) {
     ApplyTheme(gui.active_theme);
     bool done = false;
 
+    // CPU execution runs on a background thread (RunCPUWorkerLoop) so that
+    // high clock_speed settings can step as fast as requested without
+    // blocking SDL/ImGui rendering. gui.cpu_mutex serializes access between
+    // that thread and the UI-thread block below that reads/mutates the CPU.
+    std::thread cpu_worker(RunCPUWorkerLoop, std::ref(cpu), std::ref(gui));
+
     while (!done) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
@@ -63,63 +71,30 @@ int main(int argc, char **argv) {
                            SDL_GetPerformanceFrequency();
         last_ticks = current_ticks;
 
-        UpdateHighlights(cpu, gui.highlighter, delta_time);
-        UpdateStackFrameTracking(cpu, gui);
-
-        if (gui.is_running && !cpu.is_halted() &&
-            gui.cpu_error_message.empty()) {
-            double current_time = SDL_GetTicks() / 1000.0;
-            double interval = 1.0 / gui.clock_speed;
-
-            while (current_time - gui.last_step_time >= interval &&
-                   gui.is_running && !cpu.is_halted()) {
-
-                if (cpu.get_executor().get_state() == ExecutionState::FETCH) {
-                    uint64_t pc = cpu.get_registers().get_pc();
-
-                    if (gui.breakpoints.count(pc) &&
-                        gui.last_breakpoint_hit != pc) {
-                        gui.is_running = false;
-                        gui.last_breakpoint_hit = pc;
-                        break;
-                    }
-                    if (gui.last_breakpoint_hit != pc) {
-                        gui.last_breakpoint_hit = (uint64_t)-1;
-                    }
-
-                    CaptureSnapshot(cpu, gui);
-                }
-
-                try {
-                    if (gui.run_by_uop)
-                        cpu.step_uop();
-                    else
-                        cpu.step();
-                } catch (const std::exception &e) {
-                    gui.is_running = false;
-                    gui.cpu_error_message = e.what();
-                    break;
-                }
-                gui.last_step_time += interval;
-            }
-        }
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
 
         ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport());
 
-        UI_ControlTower(cpu, gui, p_state);
-        UI_RegisterFile(cpu, gui); // Pass GUIState
-        UI_ALUMonitor(cpu);
-        UI_MemoryView(cpu, gui);
-        UI_StackFrameExplorer(cpu, gui);
-        UI_FlashROMView(cpu, gui);
-        UI_MicrocodePipeline(cpu);
-        UI_Assembler(cpu, gui, p_state);
-        UI_ProgramView(cpu, gui);
-        UI_Peripherals(cpu, cfg, p_state);
-        UI_SystemSchematic(cpu, gui); // Pass GUIState
+        {
+            std::lock_guard<std::mutex> lock(gui.cpu_mutex);
+
+            UpdateHighlights(cpu, gui.highlighter, delta_time);
+            UpdateStackFrameTracking(cpu, gui);
+
+            UI_ControlTower(cpu, gui, p_state);
+            UI_RegisterFile(cpu, gui); // Pass GUIState
+            UI_ALUMonitor(cpu);
+            UI_MemoryView(cpu, gui);
+            UI_StackFrameExplorer(cpu, gui);
+            UI_FlashROMView(cpu, gui);
+            UI_MicrocodePipeline(cpu);
+            UI_Assembler(cpu, gui, p_state);
+            UI_ProgramView(cpu, gui);
+            UI_Peripherals(cpu, cfg, p_state);
+            UI_SystemSchematic(cpu, gui); // Pass GUIState
+        }
 
         ImGui::Render();
         glViewport(0, 0, (int)io.DisplaySize.x, (int)io.DisplaySize.y);
@@ -128,6 +103,9 @@ int main(int argc, char **argv) {
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         SDL_GL_SwapWindow(window);
     }
+
+    gui.stop_worker = true;
+    cpu_worker.join();
 
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplSDL2_Shutdown();

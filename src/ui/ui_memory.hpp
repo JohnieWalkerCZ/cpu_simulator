@@ -7,22 +7,22 @@ inline void UI_MemoryView(CPU &cpu, GUIState &gui) {
     ImGui::Separator();
 
     auto &mem = cpu.get_memory();
-    uint32_t pc = (uint32_t)cpu.get_registers().get_pc();
+    word_t pc = cpu.get_registers().get_pc();
 
     ImGui::BeginChild("MemScroll");
 
-    uint32_t display_limit = static_cast<uint32_t>(mem.size());
+    word_t display_limit = mem.size();
     if (!gui.show_full_memory && display_limit > 256) {
         display_limit = 256;
     }
 
-    for (uint32_t i = 0; i < display_limit; i += 8) {
-        ImGui::TextDisabled("%04X: ", i);
+    for (word_t i = 0; i < display_limit; i += 8) {
+        ImGui::TextDisabled("%s: ", word_to_hex_string(i, 16).c_str());
         ImGui::SameLine();
 
-        for (uint32_t j = 0; j < 8 && (i + j) < display_limit; j++) {
-            uint32_t addr = i + j;
-            uint8_t val = mem.raw()[addr];
+        for (word_t j = 0; j < 8 && (i + j) < display_limit; j++) {
+            word_t addr = i + j;
+            uint8_t val = mem.peek(addr);
 
             if (addr == pc && !mem.is_harvard())
                 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0, 1, 0, 1));
@@ -36,8 +36,9 @@ inline void UI_MemoryView(CPU &cpu, GUIState &gui) {
     }
 
     if (!gui.show_full_memory && mem.size() > 256) {
-        ImGui::TextDisabled("... (Use checkbox to see all %zu bytes) ...",
-                            mem.size());
+        ImGui::TextDisabled(
+            "... (Use checkbox to see all %s bytes) ...",
+            word_to_dec_string(mem.size()).c_str());
     }
 
     ImGui::EndChild();
@@ -58,10 +59,9 @@ inline void UI_ProgramView(CPU &cpu, GUIState &gui) {
     auto &regs = cpu.get_registers();
     Decoder decoder(config);
 
-    uint32_t pc = static_cast<uint32_t>(regs.get_pc());
-    uint32_t curr_addr = cpu.get_load_address();
-    uint32_t end_addr =
-        curr_addr + static_cast<uint32_t>(cpu.get_code().size());
+    word_t pc = regs.get_pc();
+    word_t curr_addr = cpu.get_load_address();
+    word_t end_addr = curr_addr + cpu.get_code().size();
     int unit_bits = config.data_width;
     int unit_bytes = (config.data_width + 7) / 8;
 
@@ -72,13 +72,13 @@ inline void UI_ProgramView(CPU &cpu, GUIState &gui) {
     };
 
     while (curr_addr < end_addr) {
-        uint64_t first_unit = 0;
+        word_t first_unit = 0;
         try {
-            first_unit = mem.read(curr_addr, true) & ((1ULL << unit_bits) - 1);
+            first_unit = mem.read(curr_addr, true) & mask_for_width(unit_bits);
         } catch (const std::exception &) {
             try {
                 first_unit =
-                    mem.read(curr_addr, false) & ((1ULL << unit_bits) - 1);
+                    mem.read(curr_addr, false) & mask_for_width(unit_bits);
             } catch (const std::exception &) {
                 curr_addr += unit_bytes;
                 continue;
@@ -92,17 +92,18 @@ inline void UI_ProgramView(CPU &cpu, GUIState &gui) {
         if (units <= 0)
             units = 1;
 
-        uint64_t raw = first_unit;
+        word_t raw = first_unit;
         for (int i = 1; i < units && (curr_addr + i * unit_bytes) < mem.size();
              ++i) {
-            uint64_t next_unit = 0;
+            word_t next_unit = 0;
+            word_t unit_addr = curr_addr + static_cast<word_t>(i * unit_bytes);
             try {
-                next_unit = mem.read(curr_addr + i * unit_bytes, true) &
-                            ((1ULL << unit_bits) - 1);
+                next_unit =
+                    mem.read(unit_addr, true) & mask_for_width(unit_bits);
             } catch (const std::exception &) {
                 try {
-                    next_unit = mem.read(curr_addr + i * unit_bytes, false) &
-                                ((1ULL << unit_bits) - 1);
+                    next_unit =
+                        mem.read(unit_addr, false) & mask_for_width(unit_bits);
                 } catch (const std::exception &) {
                     next_unit = 0;
                 }
@@ -140,7 +141,6 @@ inline void UI_ProgramView(CPU &cpu, GUIState &gui) {
                         asm_line += ", ";
                     }
 
-                    char buf[32];
                     if (enc == -1 && dec.regs.count("dest"))
                         asm_line += get_reg_name(dec.regs.at("dest"));
                     else if (enc == -2 && dec.regs.count("src"))
@@ -151,13 +151,12 @@ inline void UI_ProgramView(CPU &cpu, GUIState &gui) {
                         asm_line +=
                             std::to_string((int8_t)dec.imms.at("offset"));
                     else if (enc == -5 && dec.imms.count("imm8"))
-                        asm_line += std::to_string(dec.imms.at("imm8"));
+                        asm_line += word_to_dec_string(dec.imms.at("imm8"));
                     else if (enc == -6 && dec.imms.count("imm16"))
-                        asm_line += std::to_string(dec.imms.at("imm16"));
+                        asm_line += word_to_dec_string(dec.imms.at("imm16"));
                     else if (enc == -7 && dec.imms.count("address")) {
-                        snprintf(buf, sizeof(buf), "0x%X",
-                                 (uint32_t)dec.imms.at("address"));
-                        asm_line += buf;
+                        asm_line += FormatHexValue(dec.imms.at("address"),
+                                                   config.addr_width);
                     }
                 }
             }
@@ -165,7 +164,7 @@ inline void UI_ProgramView(CPU &cpu, GUIState &gui) {
 
         bool is_current_pc = (curr_addr == pc);
 
-        ImGui::PushID(curr_addr);
+        ImGui::PushID((int)curr_addr);
         bool is_bp = gui.breakpoints.count(curr_addr);
         if (is_bp)
             ImGui::TextColored(ImVec4(1.0f, 0.2f, 0.2f, 1.0f), " (O) ");
@@ -186,13 +185,15 @@ inline void UI_ProgramView(CPU &cpu, GUIState &gui) {
         if (is_current_pc) {
             ImGui::PushStyleColor(ImGuiCol_Text,
                                   ImVec4(0.2f, 1.0f, 0.2f, 1.0f));
-            ImGui::Text("-> %04X: %s", curr_addr, asm_line.c_str());
+            ImGui::Text("-> %04llX: %s", (unsigned long long)curr_addr,
+                       asm_line.c_str());
             ImGui::PopStyleColor();
 
             if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY())
                 ImGui::SetScrollHereY(0.5f);
         } else {
-            ImGui::Text("   %04X: %s", curr_addr, asm_line.c_str());
+            ImGui::Text("   %04llX: %s", (unsigned long long)curr_addr,
+                       asm_line.c_str());
         }
 
         curr_addr += units * unit_bytes;
@@ -216,23 +217,22 @@ inline void UI_FlashROMView(CPU &cpu, GUIState &gui) {
     ImGui::Checkbox("Show Full Address Space##flash", &gui.show_full_memory);
     ImGui::Separator();
 
-    uint32_t pc = (uint32_t)cpu.get_registers().get_pc();
-    const auto &raw_rom = mem.raw_instruction();
+    word_t pc = cpu.get_registers().get_pc();
 
     ImGui::BeginChild("FlashScroll");
 
-    uint32_t display_limit = static_cast<uint32_t>(raw_rom.size());
+    word_t display_limit = mem.size();
     if (!gui.show_full_memory && display_limit > 256) {
         display_limit = 256;
     }
 
-    for (uint32_t i = 0; i < display_limit; i += 8) {
-        ImGui::TextDisabled("%04X: ", i);
+    for (word_t i = 0; i < display_limit; i += 8) {
+        ImGui::TextDisabled("%s: ", word_to_hex_string(i, 16).c_str());
         ImGui::SameLine();
 
-        for (uint32_t j = 0; j < 8 && (i + j) < display_limit; j++) {
-            uint32_t addr = i + j;
-            uint8_t val = raw_rom[addr];
+        for (word_t j = 0; j < 8 && (i + j) < display_limit; j++) {
+            word_t addr = i + j;
+            uint8_t val = mem.peek_instruction(addr);
 
             if (addr == pc)
                 ImGui::PushStyleColor(ImGuiCol_Text,
@@ -246,9 +246,10 @@ inline void UI_FlashROMView(CPU &cpu, GUIState &gui) {
         ImGui::NewLine();
     }
 
-    if (!gui.show_full_memory && raw_rom.size() > 256) {
-        ImGui::TextDisabled("... (Use checkbox to see all %zu bytes) ...",
-                            raw_rom.size());
+    if (!gui.show_full_memory && mem.size() > 256) {
+        ImGui::TextDisabled(
+            "... (Use checkbox to see all %s bytes) ...",
+            word_to_dec_string(mem.size()).c_str());
     }
 
     ImGui::EndChild();

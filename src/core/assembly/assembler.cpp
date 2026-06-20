@@ -97,9 +97,9 @@ int Assembler::get_register_index(const std::string &name) const {
     return -1;
 }
 
-uint64_t Assembler::parse_operand(
+word_t Assembler::parse_operand(
     const std::string &op,
-    const std::unordered_map<std::string, uint64_t> &labels) {
+    const std::unordered_map<std::string, word_t> &labels) {
     std::string cleaned = op;
     if (!cleaned.empty() && cleaned[0] == '#') {
         cleaned = cleaned.substr(1);
@@ -110,25 +110,31 @@ uint64_t Assembler::parse_operand(
     }
 
     try {
-        return std::stoull(cleaned, nullptr, 0);
+        return parse_word(cleaned);
     } catch (...) {
         throw std::runtime_error("Invalid operand or missing label: " + op);
     }
 }
 
 std::vector<uint8_t> Assembler::assemble(const std::string &source,
-                                         uint64_t load_address) {
-    std::unordered_map<std::string, uint64_t> labels;
+                                         word_t load_address) {
+    std::unordered_map<std::string, word_t> labels;
     std::istringstream iss(source);
     std::string line;
 
-    enum class DirectiveKind { None, DefineBytes, DefineWords, DefineAscii };
+    enum class DirectiveKind {
+        None,
+        DefineBytes,
+        DefineWords,
+        DefineAscii,
+        DefineString
+    };
     struct ParsedLine {
         std::vector<std::string> tokens;
         const Instruction *inst = nullptr;
         int total_bits = 0;
         int units = 0;
-        uint64_t address = 0;
+        word_t address = 0;
         DirectiveKind directive = DirectiveKind::None;
     };
 
@@ -138,7 +144,7 @@ std::vector<uint8_t> Assembler::assemble(const std::string &source,
     };
 
     std::vector<ParsedLine> parsed_lines;
-    uint64_t current_addr = load_address;
+    word_t current_addr = load_address;
 
     // Pass 1: Resolve labels/constants and calculate line sizes
     while (std::getline(iss, line)) {
@@ -168,31 +174,36 @@ std::vector<uint8_t> Assembler::assemble(const std::string &source,
                 continue;
             }
 
-            if (directive == ".db" || directive == ".dw") {
+            if (directive == ".db" || directive == ".byte" ||
+                directive == ".dw" || directive == ".word") {
                 if (tokens.size() < 2)
                     throw std::runtime_error(directive +
                                              " requires at least one value: " +
                                              line);
-                int value_bytes = (directive == ".dw") ? 2 : 1;
+                bool is_word = (directive == ".dw" || directive == ".word");
+                int value_bytes = is_word ? 2 : 1;
                 uint64_t byte_count =
                     static_cast<uint64_t>(tokens.size() - 1) * value_bytes;
-                DirectiveKind kind = (directive == ".dw")
-                                        ? DirectiveKind::DefineWords
-                                        : DirectiveKind::DefineBytes;
+                DirectiveKind kind = is_word ? DirectiveKind::DefineWords
+                                             : DirectiveKind::DefineBytes;
                 parsed_lines.push_back(
                     {tokens, nullptr, 0, 0, current_addr, kind});
                 current_addr += byte_count;
                 continue;
             }
 
-            if (directive == ".ascii") {
+            if (directive == ".ascii" || directive == ".string") {
                 if (tokens.size() != 2)
                     throw std::runtime_error(
-                        "Invalid .ascii syntax (expected: .ascii \"text\"): " +
+                        "Invalid " + directive +
+                        " syntax (expected: " + directive + " \"text\"): " +
                         line);
-                parsed_lines.push_back({tokens, nullptr, 0, 0, current_addr,
-                                       DirectiveKind::DefineAscii});
-                current_addr += tokens[1].size();
+                bool is_string = (directive == ".string");
+                parsed_lines.push_back(
+                    {tokens, nullptr, 0, 0, current_addr,
+                     is_string ? DirectiveKind::DefineString
+                              : DirectiveKind::DefineAscii});
+                current_addr += tokens[1].size() + (is_string ? 1 : 0);
                 continue;
             }
 
@@ -247,18 +258,21 @@ std::vector<uint8_t> Assembler::assemble(const std::string &source,
     std::vector<uint8_t> output;
     for (const auto &pline : parsed_lines) {
         if (pline.directive != DirectiveKind::None) {
-            if (pline.directive == DirectiveKind::DefineAscii) {
+            if (pline.directive == DirectiveKind::DefineAscii ||
+                pline.directive == DirectiveKind::DefineString) {
                 for (unsigned char ch : pline.tokens[1])
                     output.push_back(static_cast<uint8_t>(ch));
+                if (pline.directive == DirectiveKind::DefineString)
+                    output.push_back(0x00);
             } else {
                 int width =
                     (pline.directive == DirectiveKind::DefineWords) ? 16 : 8;
                 int bytes = width / 8;
                 bool is_little = (config_.endianness == "little");
-                uint64_t mask = (width >= 64) ? ~0ULL : (1ULL << width) - 1;
+                word_t mask = mask_for_width(width);
 
                 for (size_t i = 1; i < pline.tokens.size(); ++i) {
-                    uint64_t val = parse_operand(pline.tokens[i], labels) & mask;
+                    word_t val = parse_operand(pline.tokens[i], labels) & mask;
                     for (int b = 0; b < bytes; ++b) {
                         int shift = is_little ? (b * 8) : ((bytes - 1 - b) * 8);
                         output.push_back(
@@ -269,12 +283,12 @@ std::vector<uint8_t> Assembler::assemble(const std::string &source,
             continue;
         }
 
-        uint64_t accum = 0;
+        word_t accum = 0;
         size_t op_idx = 1;
 
         for (size_t i = 0; i < pline.inst->encoding.size(); ++i) {
             int enc = pline.inst->encoding[i];
-            uint64_t val = 0;
+            word_t val = 0;
             int width = 0;
 
             if (enc >= 0) {
@@ -296,8 +310,9 @@ std::vector<uint8_t> Assembler::assemble(const std::string &source,
                     val = parse_operand(op_token, labels);
                     if (enc == -4) {
                         int unit_bytes = (config_.data_width + 7) / 8;
-                        uint64_t next_pc =
-                            pline.address + pline.units * unit_bytes;
+                        word_t next_pc =
+                            pline.address +
+                            static_cast<word_t>(pline.units * unit_bytes);
                         val = val - next_pc;
                     }
 
@@ -312,7 +327,7 @@ std::vector<uint8_t> Assembler::assemble(const std::string &source,
                 }
             }
 
-            uint64_t mask = (width >= 64) ? ~0ULL : (1ULL << width) - 1;
+            word_t mask = mask_for_width(width);
             val &= mask;
 
             accum = (accum << width) | val;
@@ -328,10 +343,8 @@ std::vector<uint8_t> Assembler::assemble(const std::string &source,
 
         for (int shift = fetched_bits - config_.data_width; shift >= 0;
              shift -= config_.data_width) {
-            uint64_t mask = (config_.data_width >= 64)
-                                ? ~0ULL
-                                : (1ULL << config_.data_width) - 1;
-            uint64_t unit_val = (accum >> shift) & mask;
+            word_t mask = mask_for_width(config_.data_width);
+            word_t unit_val = (accum >> shift) & mask;
 
             for (int b = 0; b < unit_bytes; ++b) {
                 int byte_shift =

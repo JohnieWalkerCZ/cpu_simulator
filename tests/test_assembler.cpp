@@ -137,6 +137,76 @@ int main() {
             assert(code[2] == 0x07);
         }
 
+        // 8b. Test .byte/.word/.string as aliases producing identical output
+        // to .db/.dw/.ascii, with .string additionally null-terminating
+        {
+            std::string byte_source = ".byte 0x41, 66, 0x43\n";
+            std::string db_equiv = ".db 0x41, 66, 0x43\n";
+            assert(assembler.assemble(byte_source, 0) ==
+                   assembler.assemble(db_equiv, 0));
+
+            std::string word_source = ".word 0x1234\n";
+            std::string dw_equiv = ".dw 0x1234\n";
+            assert(assembler.assemble(word_source, 0) ==
+                   assembler.assemble(dw_equiv, 0));
+
+            std::string string_source = "msg:\n"
+                                        "  .string \"Hi\"\n"
+                                        "  JMP msg\n";
+            auto code = assembler.assemble(string_source, 0);
+            assert(code.size() == 6); // "Hi" + null terminator + 3-byte JMP
+            assert(code[0] == 'H');
+            assert(code[1] == 'i');
+            assert(code[2] == 0x00);
+            assert(code[3] == 0x07); // JMP opcode
+        }
+
+        // 8c. Wide immediate (>64 bits): assemble an instruction with an
+        // 88-bit address operand and verify it round-trips through the
+        // decoder correctly -- this used to be impossible through a
+        // uint64_t encoding pipeline.
+        {
+            nlohmann::json wide_j = {
+                {"name", "WideISA"},
+                {"data_bus", {{"width", 8}}},
+                {"address_bus", {{"width", 88}}},
+                {"memory", {{"size", 1024}}},
+                {"registers", {
+                    {"special", {
+                        {{"name", "PC"}, {"width", 16}, {"initial", 0}, {"role", "program_counter"}}
+                    }}
+                }},
+                {"instruction_set", {
+                    {"instructions", {
+                        {
+                            {"name", "WIDE"}, {"opcode", 7},
+                            {"encoding", {7, "address"}},
+                            {"microcode", {
+                                {{"action", "halt"}}
+                            }}
+                        }
+                    }}
+                }}
+            };
+            Config wide_cfg = Config::from_json(wide_j);
+            Assembler wide_assembler(wide_cfg);
+            Decoder wide_decoder(wide_cfg);
+
+            word_t address_val = parse_word("0xABCDEF0123456789AB");
+            auto wide_code = wide_assembler.assemble(
+                "WIDE " + word_to_dec_string(address_val), 0);
+
+            assert(wide_code.size() == 12); // (8 + 88) / 8 bits = 12 bytes
+
+            word_t raw = 0;
+            for (uint8_t b : wide_code)
+                raw = (raw << 8) | b;
+
+            auto decoded = wide_decoder.decode(raw, 96);
+            assert(decoded.is_valid);
+            assert(decoded.imms.at("address") == address_val);
+        }
+
         // 9. Test directive error handling
         try {
             assembler.assemble(".equ X, 1\n.equ X, 2\n", 0);

@@ -64,12 +64,12 @@ void Decoder::build_layout_map() {
     }
 }
 
-uint8_t Decoder::peek_opcode(uint64_t first_word) const {
+uint8_t Decoder::peek_opcode(word_t first_word) const {
     int shift = config_.data_width - opcode_field_width_;
     if (shift < 0)
         shift = 0;
     return static_cast<uint8_t>((first_word >> shift) &
-                                ((1ULL << opcode_field_width_) - 1));
+                                mask_for_width(opcode_field_width_));
 }
 
 int Decoder::get_total_bits(uint8_t opcode) const {
@@ -79,7 +79,7 @@ int Decoder::get_total_bits(uint8_t opcode) const {
     return config_.data_width;
 }
 
-DecodedInstruction Decoder::decode(uint64_t instruction_bits,
+DecodedInstruction Decoder::decode(word_t instruction_bits,
                                    int fetched_bits) const {
     DecodedInstruction result;
     result.raw_bits = instruction_bits;
@@ -104,14 +104,14 @@ DecodedInstruction Decoder::decode(uint64_t instruction_bits,
 
     int current_bit = 0;
     for (const auto &field : layout.fields) {
-        uint64_t val = extract_bits(instruction_bits, current_bit, field.bits,
-                                    fetched_bits);
+        word_t val = extract_bits(instruction_bits, current_bit, field.bits,
+                                  fetched_bits);
 
         if (field.is_register) {
             if (val >= config_.registers.size()) {
                 result.is_valid = false;
-                result.error = "Invalid register index " + std::to_string(val) +
-                               " for " + result.name;
+                result.error = "Invalid register index " +
+                               word_to_dec_string(val) + " for " + result.name;
                 return result;
             }
             result.regs[field.token] = static_cast<int>(val);
@@ -124,15 +124,15 @@ DecodedInstruction Decoder::decode(uint64_t instruction_bits,
     return result;
 }
 
-uint64_t Decoder::extract_bits(uint64_t val, int start_bit, int width,
-                               int total_bits) const {
+word_t Decoder::extract_bits(word_t val, int start_bit, int width,
+                             int total_bits) const {
     int shift = total_bits - start_bit - width;
-    uint64_t mask = (width >= 64) ? ~0ULL : (1ULL << width) - 1;
+    word_t mask = mask_for_width(width);
 
     if (shift < 0)
         return val & mask;
 
-    if (shift >= 64)
+    if (shift >= 128)
         return 0;
 
     return (val >> shift) & mask;

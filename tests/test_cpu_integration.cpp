@@ -141,6 +141,67 @@ int main() {
             std::cout << "Integration Test 3 (Hardware Interrupts) passed.\n";
         }
 
+        // ==========================================
+        // Test 4: End-to-end execution with a >64-bit register
+        // ==========================================
+        {
+            nlohmann::json wide_j = {
+                {"name", "WideISA"},
+                {"data_bus", {{"width", 8}}},
+                {"address_bus", {{"width", 16}}},
+                {"memory", {{"size", 1024}}},
+                {"registers", {
+                    {"general_purpose", {
+                        {{"name", "R0"}, {"width", 72}, {"initial", 0}},
+                        {{"name", "R1"}, {"width", 72}, {"initial", 0}}
+                    }},
+                    {"special", {
+                        {{"name", "PC"}, {"width", 16}, {"initial", 0}, {"role", "program_counter"}}
+                    }}
+                }},
+                {"alu", {
+                    {"operations", {
+                        {{"name", "ADD"}, {"code", 1}, {"expression", "a + b"}, {"latency", 1}}
+                    }}
+                }},
+                {"instruction_set", {
+                    {"instructions", {
+                        {
+                            {"name", "ADD"}, {"opcode", 1},
+                            {"encoding", {1, "dest", "src"}},
+                            {"microcode", {
+                                {{"action", "alu"}, {"op", "ADD"},
+                                 {"a", "@dest"}, {"b", "@src"}, {"out", "@dest"}}
+                            }}
+                        }
+                    }}
+                }}
+            };
+            Config wide_cfg = Config::from_json(wide_j);
+            assert(wide_cfg.validate());
+
+            CPU wide_cpu(wide_cfg);
+            Assembler wide_assembler(wide_cfg);
+
+            auto wide_code = wide_assembler.assemble("ADD R0, R1", 0);
+            wide_cpu.load_program(wide_code, 0);
+            wide_cpu.reset();
+
+            word_t r0_init = parse_word("0xFFFFFFFFFFFFFFFF00"); // > 64 bits
+            word_t r1_init = parse_word("0x0000000000000000FF");
+            wide_cpu.get_registers().write("R0", r0_init);
+            wide_cpu.get_registers().write("R1", r1_init);
+
+            wide_cpu.step(); // Execute ADD R0, R1
+
+            word_t expected = (r0_init + r1_init) & mask_for_width(72);
+            assert(wide_cpu.get_registers().read("R0") == expected);
+            assert((expected >> 64) != 0); // confirms high bits are real
+
+            std::cout
+                << "Integration Test 4 (>64-bit register ADD) passed.\n";
+        }
+
         std::cout << "All CPU integration tests passed successfully!\n";
         return 0;
     } catch (const std::exception &e) {

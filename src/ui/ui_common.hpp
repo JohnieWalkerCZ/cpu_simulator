@@ -2,9 +2,13 @@
 #include "core/cpu.hpp"
 #include "imgui.h"
 #include <SDL.h>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <iostream>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -73,24 +77,30 @@ struct BusHighlighter {
 };
 
 struct CPUSnapshot {
-    std::vector<uint64_t> physical_registers;
-    std::vector<uint8_t> memory;
-    std::vector<uint8_t> instruction_memory;
+    std::vector<word_t> physical_registers;
+    Memory::Snapshot mem_snapshot;
     Executor::ExecutorSnapshot executor_state;
 };
 
 struct StackFrameState {
     bool initialized = false;
-    uint64_t last_sp = 0;
-    std::vector<uint64_t> frame_boundaries; // assumes a descending stack
+    word_t last_sp = 0;
+    std::vector<word_t> frame_boundaries; // assumes a descending stack
 };
 
 struct GUIState {
-    bool is_running = false;
-    float clock_speed = 2.0f;
-    double last_step_time = 0;
+    // Shared with the background CPU worker thread (see RunCPUWorkerLoop) --
+    // accessed from both the UI thread and the worker, so these are atomic
+    // rather than plain fields. cpu_mutex additionally guards the CPU
+    // instance itself plus `history`/`breakpoints`/`cpu_error_message`/
+    // `last_breakpoint_hit`, which the worker mutates while stepping.
+    std::atomic<bool> is_running{false};
+    std::atomic<float> clock_speed{2.0f};
+    std::atomic<bool> run_by_uop{false};
+    std::atomic<bool> stop_worker{false};
+    std::mutex cpu_mutex;
+
     bool show_full_memory = false;
-    bool run_by_uop = false;
     bool show_register_bits = false;
     bool show_subreg_hierarchy = true;
 
@@ -98,8 +108,8 @@ struct GUIState {
     ImVec2 pan = ImVec2(0.0f, 0.0f);
 
     std::deque<CPUSnapshot> history;
-    std::unordered_set<uint64_t> breakpoints;
-    uint64_t last_breakpoint_hit = (uint64_t)-1;
+    std::unordered_set<word_t, WordHash> breakpoints;
+    word_t last_breakpoint_hit = ~static_cast<word_t>(0);
 
     char asm_source[8 * 1000] = "HLT";
     std::string asm_status = "";
@@ -118,23 +128,8 @@ struct PeripheralsState {
     std::unordered_map<std::string, uint64_t> key_states;
 };
 
-inline std::string FormatHexValue(uint64_t val, int width) {
-    char buf[32];
-    if (width <= 8)
-        snprintf(buf, sizeof(buf), "0x%02X", (unsigned int)val);
-    else if (width <= 16)
-        snprintf(buf, sizeof(buf), "0x%04X", (unsigned int)val);
-    else if (width <= 24)
-        snprintf(buf, sizeof(buf), "0x%06X",
-                 (unsigned int)val); // 24-bit instruction support
-    else if (width <= 32)
-        snprintf(buf, sizeof(buf), "0x%08X", (unsigned int)val);
-    else if (width <= 48)
-        snprintf(buf, sizeof(buf), "0x%012llX",
-                 (unsigned long long)val); // 48-bit instruction support
-    else
-        snprintf(buf, sizeof(buf), "0x%016llX", (unsigned long long)val);
-    return std::string(buf);
+inline std::string FormatHexValue(word_t val, int width) {
+    return "0x" + word_to_hex_string(val, width);
 }
 
 inline int MapRegToRow(int reg_idx, const RegisterFile &regs) {
@@ -159,26 +154,27 @@ inline void UpdateHighlights(CPU &cpu, BusHighlighter &h, float delta_time) {
             exec.get_state() == ExecutionState::DECODE) {
             // Retrieve current units fetched or execute lookahead peek-fetch to
             // show upcoming instruction word
-            uint64_t current_pc = regs.get_pc();
+            word_t current_pc = regs.get_pc();
             int unit_bits = config.data_width;
             int unit_bytes = (config.data_width + 7) / 8;
 
             if (current_pc < mem.size()) {
-                uint64_t peek_first_unit = mem.read(current_pc, true);
-                peek_first_unit &= ((1ULL << unit_bits) - 1);
+                word_t peek_first_unit = mem.read(current_pc, true);
+                peek_first_unit &= mask_for_width(unit_bits);
 
                 Decoder peek_decoder(config);
                 uint8_t peek_opcode = peek_decoder.peek_opcode(peek_first_unit);
                 int peek_total_bits = peek_decoder.get_total_bits(peek_opcode);
                 int peek_units = (peek_total_bits + unit_bits - 1) / unit_bits;
 
-                uint64_t peek_raw = peek_first_unit;
+                word_t peek_raw = peek_first_unit;
                 for (int i = 1; i < peek_units &&
                                 (current_pc + i * unit_bytes) < mem.size();
                      ++i) {
-                    uint64_t next_u =
-                        mem.read(current_pc + i * unit_bytes, true);
-                    next_u &= ((1ULL << unit_bits) - 1);
+                    word_t next_u =
+                        mem.read(current_pc + static_cast<word_t>(i * unit_bytes),
+                                true);
+                    next_u &= mask_for_width(unit_bits);
                     peek_raw = (peek_raw << unit_bits) | next_u;
                 }
 
@@ -335,7 +331,7 @@ inline void UpdateHighlights(CPU &cpu, BusHighlighter &h, float delta_time) {
                     h.data_bus_route = (uop->action == "mem_read")
                                            ? DataBusRoute::MEM_TO_REG
                                            : DataBusRoute::REG_TO_MEM;
-                    uint64_t addr = exec.get_last_addr_val();
+                    word_t addr = exec.get_last_addr_val();
                     bool is_peripheral = false;
                     h.active_peripheral_name.clear();
                     for (const auto &p : config.peripherals) {
@@ -398,7 +394,7 @@ inline void UpdateHighlights(CPU &cpu, BusHighlighter &h, float delta_time) {
 
                         if (bit_pos != -1) {
                             int flags_idx = regs.find_by_role("status_flags");
-                            uint64_t f_register =
+                            word_t f_register =
                                 (flags_idx != -1) ? regs.read(flags_idx) : 0;
                             bool is_set = (f_register >> bit_pos) & 1;
                             taken = invert ? !is_set : is_set;
@@ -432,7 +428,7 @@ inline void UpdateStackFrameTracking(CPU &cpu, GUIState &gui) {
         return;
     }
 
-    uint64_t sp = regs.read(sp_idx);
+    word_t sp = regs.read(sp_idx);
     if (!sf.initialized) {
         sf.last_sp = sp;
         sf.frame_boundaries.clear();
@@ -807,12 +803,67 @@ inline int GetRegisterGridWidth(const RegisterDef &def,
 inline void CaptureSnapshot(CPU &cpu, GUIState &gui) {
     CPUSnapshot snap;
     snap.physical_registers = cpu.get_registers().get_physical_registers();
-    snap.memory = cpu.get_memory().raw();
-    snap.instruction_memory = cpu.get_memory().raw_instruction();
+    snap.mem_snapshot = cpu.get_memory().capture_snapshot();
     snap.executor_state = cpu.get_executor().take_snapshot();
 
     gui.history.push_back(snap);
     if (gui.history.size() > 1000) {
         gui.history.pop_front();
+    }
+}
+
+// Runs on a dedicated background thread so that high clock_speed settings
+// can step the CPU as fast as requested without starving the SDL/ImGui
+// render loop. Every access to `cpu` or to the shared GUIState fields it
+// mutates (history, breakpoints, cpu_error_message, last_breakpoint_hit)
+// happens under gui.cpu_mutex; the UI thread takes the same lock once per
+// frame around its own CPU-touching work (see main.cpp), so the two never
+// observe each other mid-step.
+inline void RunCPUWorkerLoop(CPU &cpu, GUIState &gui) {
+    using clock = std::chrono::steady_clock;
+    auto last_step = clock::now();
+
+    while (!gui.stop_worker.load()) {
+        if (!gui.is_running.load()) {
+            last_step = clock::now();
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            continue;
+        }
+
+        double interval = 1.0 / static_cast<double>(gui.clock_speed.load());
+        auto now = clock::now();
+        if (std::chrono::duration<double>(now - last_step).count() < interval) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
+        last_step = now;
+
+        std::lock_guard<std::mutex> lock(gui.cpu_mutex);
+        if (!gui.is_running.load() || cpu.is_halted() ||
+            !gui.cpu_error_message.empty()) {
+            continue;
+        }
+
+        if (cpu.get_executor().get_state() == ExecutionState::FETCH) {
+            word_t pc = cpu.get_registers().get_pc();
+            if (gui.breakpoints.count(pc) && gui.last_breakpoint_hit != pc) {
+                gui.is_running = false;
+                gui.last_breakpoint_hit = pc;
+                continue;
+            }
+            if (gui.last_breakpoint_hit != pc)
+                gui.last_breakpoint_hit = ~static_cast<word_t>(0);
+            CaptureSnapshot(cpu, gui);
+        }
+
+        try {
+            if (gui.run_by_uop.load())
+                cpu.step_uop();
+            else
+                cpu.step();
+        } catch (const std::exception &e) {
+            gui.is_running = false;
+            gui.cpu_error_message = e.what();
+        }
     }
 }

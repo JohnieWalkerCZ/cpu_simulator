@@ -7,8 +7,8 @@
 #include <stdexcept>
 
 ALU::ALU(const Config &config) : config_(config) {
-    mask_ = (config.data_width == 64) ? ~0ULL : (1ULL << config.data_width) - 1;
-    sign_bit_ = 1ULL << (config.data_width - 1);
+    mask_ = mask_for_width(config.data_width);
+    sign_bit_ = static_cast<word_t>(1) << (config.data_width - 1);
     compile_expressions();
 }
 
@@ -37,7 +37,7 @@ std::vector<ALU::Token> ALU::tokenize(const std::string &expr) {
                    (isxdigit(expr[i]) || expr[i] == 'x' || expr[i] == 'X'))
                 s += expr[i++];
             i--;
-            tokens.push_back({TokenType::LITERAL, std::stoull(s, nullptr, 0)});
+            tokens.push_back({TokenType::LITERAL, parse_word(s)});
         } else if (ch == 'a' || ch == 'b' || ch == 'c') {
             if (ch == 'a')
                 tokens.push_back({TokenType::OPERAND_A});
@@ -123,9 +123,9 @@ std::vector<ALU::Token> ALU::shunting_yard(const std::vector<Token> &tokens) {
     return output;
 }
 
-uint64_t ALU::evaluate_rpn(const std::vector<Token> &rpn, uint64_t a,
-                           uint64_t b, uint64_t c) {
-    std::stack<uint64_t> s;
+word_t ALU::evaluate_rpn(const std::vector<Token> &rpn, word_t a, word_t b,
+                         word_t c) {
+    std::stack<word_t> s;
     for (const auto &t : rpn) {
         if (t.type == TokenType::OPERAND_A)
             s.push(a);
@@ -136,17 +136,17 @@ uint64_t ALU::evaluate_rpn(const std::vector<Token> &rpn, uint64_t a,
         else if (t.type == TokenType::LITERAL)
             s.push(t.value);
         else if (t.type == TokenType::OP_NOT) {
-            uint64_t v = s.top();
+            word_t v = s.top();
             s.pop();
             s.push(~v);
         } else if (t.type == TokenType::OP_LNOT) {
-            uint64_t v = s.top();
+            word_t v = s.top();
             s.pop();
             s.push(!v ? 1 : 0);
         } else {
-            uint64_t right = s.top();
+            word_t right = s.top();
             s.pop();
-            uint64_t left = s.top();
+            word_t left = s.top();
             s.pop();
             switch (t.type) {
             case TokenType::OP_ADD:
@@ -184,8 +184,8 @@ uint64_t ALU::evaluate_rpn(const std::vector<Token> &rpn, uint64_t a,
     return s.top();
 }
 
-ALU::FullResult ALU::execute(const std::string &op_name, uint64_t a, uint64_t b,
-                             uint64_t c, int width) {
+ALU::FullResult ALU::execute(const std::string &op_name, word_t a, word_t b,
+                             word_t c, int width) {
     const auto &rpn = compiled_ops_.at(op_name);
 
     const ALUOp *op_def = nullptr;
@@ -196,20 +196,20 @@ ALU::FullResult ALU::execute(const std::string &op_name, uint64_t a, uint64_t b,
         }
     }
 
-    uint64_t op_mask = mask_;
-    uint64_t op_sign_bit = sign_bit_;
+    word_t op_mask = mask_;
+    word_t op_sign_bit = sign_bit_;
     if (width > 0) {
-        op_mask = (width == 64) ? ~0ULL : (1ULL << width) - 1;
-        op_sign_bit = 1ULL << (width - 1);
+        op_mask = mask_for_width(width);
+        op_sign_bit = static_cast<word_t>(1) << (width - 1);
     }
 
-    uint64_t res = evaluate_rpn(rpn, a, b, c);
-    uint64_t final_res = res & op_mask;
+    word_t res = evaluate_rpn(rpn, a, b, c);
+    word_t final_res = res & op_mask;
 
-    uint64_t masked_a = a & op_mask;
-    uint64_t masked_b = b & op_mask;
+    word_t masked_a = a & op_mask;
+    word_t masked_b = b & op_mask;
 
-    uint64_t flags_out = 0;
+    word_t flags_out = 0;
 
     for (const auto &[flag_name, logic_type] : op_def->flag_rules) {
         int bit_pos = -1;
@@ -247,20 +247,20 @@ ALU::FullResult ALU::execute(const std::string &op_name, uint64_t a, uint64_t b,
         }
 
         if (flag_val)
-            flags_out |= (1ULL << bit_pos);
+            flags_out |= (static_cast<word_t>(1) << bit_pos);
     }
 
     return {final_res, flags_out};
 }
 
-uint64_t ALU::evaluate_flag_expression(const std::string &expr, uint64_t a,
-                                       uint64_t b, uint64_t c, uint64_t res,
-                                       uint64_t max_val) {
+word_t ALU::evaluate_flag_expression(const std::string &expr, word_t a,
+                                     word_t b, word_t c, word_t res,
+                                     word_t max_val) {
     std::string processed = expr;
 
-    auto replace_word = [&](const std::string &word, uint64_t val) {
+    auto replace_word = [&](const std::string &word, word_t val) {
         std::regex re("\\b" + word + "\\b");
-        processed = std::regex_replace(processed, re, std::to_string(val));
+        processed = std::regex_replace(processed, re, word_to_dec_string(val));
     };
 
     replace_word("max_val", max_val);

@@ -5,7 +5,7 @@ inline void UI_ALUMonitor(CPU &cpu) {
     ImGui::Begin("ALU Monitor");
     auto &cfg = cpu.get_config();
     int flags_idx = cpu.get_registers().find_by_role("status_flags");
-    uint64_t current_flags =
+    word_t current_flags =
         (flags_idx != -1) ? cpu.get_registers().read(flags_idx) : 0;
 
     ImGui::Text("Status Flags (from $FLAGS)");

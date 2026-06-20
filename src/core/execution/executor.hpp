@@ -3,6 +3,7 @@
 #include "../config.hpp"
 #include "../memory/memory.hpp"
 #include "../registers/register_file.hpp"
+#include "../wide_int.hpp"
 #include "decoder.hpp"
 
 enum class ExecutionState { FETCH, DECODE, EXECUTE_UOPS, DONE };
@@ -37,20 +38,20 @@ class Executor {
         int units_fetched;
         bool halted;
         int cycles;
-        uint64_t fetch_pc;
+        word_t fetch_pc;
         uint64_t fetched_bits;
-        uint64_t raw_inst_bits;
+        word_t raw_inst_bits;
         int total_bits_to_decode;
         int current_uop_cycles;
         bool interrupt_pending;
         int pending_interrupt_id;
         bool pc_modified;
         int current_execution_cycles;
-        uint64_t last_data_val;
-        uint64_t last_addr_val;
-        uint64_t last_alu_a;
-        uint64_t last_alu_b;
-        uint64_t last_alu_out;
+        word_t last_data_val;
+        word_t last_addr_val;
+        word_t last_alu_a;
+        word_t last_alu_b;
+        word_t last_alu_out;
     };
 
     ExecutorSnapshot take_snapshot() const {
@@ -99,11 +100,11 @@ class Executor {
         last_alu_out_ = snap.last_alu_out;
     }
 
-    uint64_t get_last_data_val() const { return last_data_val_; }
-    uint64_t get_last_addr_val() const { return last_addr_val_; }
-    uint64_t get_last_alu_a() const { return last_alu_a_; }
-    uint64_t get_last_alu_b() const { return last_alu_b_; }
-    uint64_t get_last_alu_out() const { return last_alu_out_; }
+    word_t get_last_data_val() const { return last_data_val_; }
+    word_t get_last_addr_val() const { return last_addr_val_; }
+    word_t get_last_alu_a() const { return last_alu_a_; }
+    word_t get_last_alu_b() const { return last_alu_b_; }
+    word_t get_last_alu_out() const { return last_alu_out_; }
 
   private:
     Config &config_;
@@ -118,12 +119,12 @@ class Executor {
     int units_fetched_ = 0;
     bool halted_ = false;
     int cycles_ = 0;
-    uint64_t fetch_pc_ = 0;
+    word_t fetch_pc_ = 0;
     uint64_t fetched_bits_;
     int pc_idx_;
     int sp_idx_;
     int flags_idx_;
-    uint64_t raw_inst_bits_ = 0;
+    word_t raw_inst_bits_ = 0;
     int total_bits_to_decode_ = 0;
     int current_uop_cycles_ = 0;
     bool interrupt_pending_ = false;
@@ -132,15 +133,15 @@ class Executor {
     int current_execution_cycles_ = 0;
 
     // Captured diagnostics registers
-    uint64_t last_data_val_ = 0;
-    uint64_t last_addr_val_ = 0;
-    uint64_t last_alu_a_ = 0;
-    uint64_t last_alu_b_ = 0;
-    uint64_t last_alu_out_ = 0;
+    word_t last_data_val_ = 0;
+    word_t last_addr_val_ = 0;
+    word_t last_alu_a_ = 0;
+    word_t last_alu_b_ = 0;
+    word_t last_alu_out_ = 0;
 
     void perform_uop(const MicroOp &uop);
     void pre_resolve_diagnostics();
-    uint64_t resolve_operand(const std::string &arg);
-    void write_operand(const std::string &arg, uint64_t value);
+    word_t resolve_operand(const std::string &arg);
+    void write_operand(const std::string &arg, word_t value);
     int get_operand_width(const std::string &arg);
 };

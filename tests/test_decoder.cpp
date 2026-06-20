@@ -137,6 +137,49 @@ int main() {
         assert(decoded_bad_reg.error.find("Invalid register index") !=
                std::string::npos);
 
+        // 7. Wide instruction word (>64 bits total): a single instruction
+        // with an 88-bit address field plus an 8-bit opcode totals 96 bits,
+        // which used to be impossible to decode through a uint64_t
+        // container. Build a minimal synthetic config for this.
+        {
+            nlohmann::json wide_j = {
+                {"name", "WideISA"},
+                {"data_bus", {{"width", 8}}},
+                {"address_bus", {{"width", 88}}},
+                {"memory", {{"size", 1024}}},
+                {"registers", {
+                    {"special", {
+                        {{"name", "PC"}, {"width", 16}, {"initial", 0}, {"role", "program_counter"}}
+                    }}
+                }},
+                {"instruction_set", {
+                    {"instructions", {
+                        {
+                            {"name", "WIDE"}, {"opcode", 7},
+                            {"encoding", {7, "address"}},
+                            {"microcode", {
+                                {{"action", "halt"}}
+                            }}
+                        }
+                    }}
+                }}
+            };
+            Config wide_cfg = Config::from_json(wide_j);
+            Decoder wide_decoder(wide_cfg);
+
+            int total_bits_wide = wide_decoder.get_total_bits(7);
+            assert(total_bits_wide == 8 + 88); // 96 bits
+
+            word_t address_val = parse_word("0xABCDEF0123456789AB");
+            word_t raw = (static_cast<word_t>(7) << 88) | address_val;
+
+            auto decoded_wide = wide_decoder.decode(raw, total_bits_wide);
+            assert(decoded_wide.is_valid);
+            assert(decoded_wide.name == "WIDE");
+            assert(decoded_wide.imms.count("address"));
+            assert(decoded_wide.imms.at("address") == address_val);
+        }
+
         std::cout << "Decoder unit tests passed successfully!\n";
         return 0;
     } catch (const std::exception &e) {

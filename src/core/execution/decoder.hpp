@@ -1,5 +1,6 @@
 #pragma once
 #include "../config.hpp"
+#include "../wide_int.hpp"
 #include <cmath>
 #include <cstdint>
 #include <string>
@@ -13,9 +14,9 @@ struct DecodedInstruction {
     std::string error;
 
     std::unordered_map<std::string, int> regs;
-    std::unordered_map<std::string, uint64_t> imms;
+    std::unordered_map<std::string, word_t> imms;
 
-    uint64_t raw_bits;
+    word_t raw_bits;
     int length_bytes;
 };
 
@@ -23,10 +24,9 @@ class Decoder {
   public:
     Decoder(const Config &config);
 
-    uint8_t peek_opcode(uint64_t first_word) const;
+    uint8_t peek_opcode(word_t first_word) const;
     int get_total_bits(uint8_t opcode) const;
-    DecodedInstruction decode(uint64_t instruction_bits,
-                              int fetched_bits) const;
+    DecodedInstruction decode(word_t instruction_bits, int fetched_bits) const;
 
     static int calculate_reg_bits(int reg_count) {
         if (reg_count <= 1)
@@ -58,6 +58,6 @@ class Decoder {
     std::unordered_map<uint8_t, InstructionLayout> layout_map_;
 
     void build_layout_map();
-    uint64_t extract_bits(uint64_t val, int start_bit, int width,
-                          int total_bits) const;
+    word_t extract_bits(word_t val, int start_bit, int width,
+                        int total_bits) const;
 };

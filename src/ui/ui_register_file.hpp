@@ -52,7 +52,7 @@ inline void UI_RegisterFile(CPU &cpu, GUIState &gui) {
         for (size_t i = 0; i < reg_defs.size(); ++i) {
             const auto &def = reg_defs[i];
             int depth = gui.show_subreg_hierarchy ? reg_depths[i] : 0;
-            uint64_t val = regs.read(def.name);
+            word_t val = regs.read(def.name);
 
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
@@ -103,7 +103,8 @@ inline void UI_RegisterFile(CPU &cpu, GUIState &gui) {
                                               bit_color);
 
                         if (ImGui::Button(is_set ? "1" : "0", ImVec2(24, 24))) {
-                            uint64_t new_val = val ^ (1ULL << bit_idx);
+                            word_t new_val =
+                                val ^ (static_cast<word_t>(1) << bit_idx);
                             regs.write(def.name, new_val);
                         }
 
@@ -149,7 +150,7 @@ inline void UI_RegisterFile(CPU &cpu, GUIState &gui) {
             }
 
             ImGui::TableSetColumnIndex(gui.show_register_bits ? 3 : 2);
-            ImGui::Text("%llu", val);
+            ImGui::Text("%s", word_to_dec_string(val).c_str());
 
             ImGui::TableSetColumnIndex(gui.show_register_bits ? 4 : 3);
             if (!def.role.empty()) {

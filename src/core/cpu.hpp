@@ -5,6 +5,7 @@
 #include "memory/memory.hpp"
 #include "peripherals/declarative_peripheral.hpp"
 #include "registers/register_file.hpp"
+#include "wide_int.hpp"
 #include <cstdint>
 #include <vector>
 
@@ -12,7 +13,7 @@ class CPU {
   public:
     explicit CPU(Config &cfg);
 
-    void load_program(const std::vector<uint8_t> &code, uint64_t address = 0);
+    void load_program(const std::vector<uint8_t> &code, word_t address = 0);
     void step();
     void step_uop();
     void run(int max_cycles = 10000);
@@ -28,7 +29,7 @@ class CPU {
 
     bool is_halted() const { return executor_.is_halted(); }
     const std::vector<uint8_t> &get_code() const { return code_; }
-    uint64_t get_load_address() const { return load_address_; }
+    word_t get_load_address() const { return load_address_; }
 
     std::vector<DeclarativePeripheral> &get_peripherals() {
         return dec_peripherals_;
@@ -43,6 +44,6 @@ class CPU {
     Executor executor_;
 
     std::vector<uint8_t> code_;
-    uint64_t load_address_;
+    word_t load_address_;
     std::vector<DeclarativePeripheral> dec_peripherals_;
 };

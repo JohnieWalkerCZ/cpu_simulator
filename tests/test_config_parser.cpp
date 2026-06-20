@@ -67,6 +67,68 @@ int main() {
         assert(cfg.registers[2].bit_mapping[0] == 4);
         assert(cfg.registers[2].bit_mapping[1] == 6);
 
+        // Non-power-of-two, >64-bit widths: data_width=12, addr_width=96,
+        // and a register wider than 64 bits with an initial value supplied
+        // as a hex string (JSON numbers can't carry full word_t precision).
+        {
+            nlohmann::json wide_j = nlohmann::json::parse(R"({
+                "name": "WideISA",
+                "data_bus": { "width": 12 },
+                "address_bus": { "width": 96 },
+                "memory": { "size": 4096 },
+                "registers": {
+                    "general_purpose": [
+                        {"name": "W0", "width": 100,
+                         "initial": "0xFFFFFFFFFFFFFFFFFFFFFFFF"}
+                    ],
+                    "special": [
+                        {"name": "PC", "width": 96, "initial": 0,
+                         "role": "program_counter"}
+                    ]
+                }
+            })");
+
+            Config wide_cfg = Config::from_json(wide_j);
+            assert(wide_cfg.data_width == 12);
+            assert(wide_cfg.addr_width == 96);
+            assert(wide_cfg.registers[0].width == 100);
+            assert(wide_cfg.registers[0].initial ==
+                  parse_word("0xFFFFFFFFFFFFFFFFFFFFFFFF"));
+            assert(wide_cfg.validate());
+        }
+
+        // validate() must still reject widths that aren't a multiple of 4,
+        // and widths beyond the 128-bit ceiling.
+        {
+            Config bad_cfg = Config::from_json(nlohmann::json::parse(R"({
+                "name": "BadWidth",
+                "data_bus": { "width": 10 },
+                "address_bus": { "width": 16 },
+                "memory": { "size": 1024 },
+                "registers": {
+                    "special": [
+                        {"name": "PC", "width": 16, "initial": 0,
+                         "role": "program_counter"}
+                    ]
+                }
+            })"));
+            assert(!bad_cfg.validate());
+
+            Config too_wide_cfg = Config::from_json(nlohmann::json::parse(R"({
+                "name": "TooWide",
+                "data_bus": { "width": 8 },
+                "address_bus": { "width": 132 },
+                "memory": { "size": 1024 },
+                "registers": {
+                    "special": [
+                        {"name": "PC", "width": 16, "initial": 0,
+                         "role": "program_counter"}
+                    ]
+                }
+            })"));
+            assert(!too_wide_cfg.validate());
+        }
+
         std::cout << "Config parser unit tests passed successfully!\n";
         return 0;
     } catch (const std::exception &e) {

@@ -65,6 +65,54 @@ int main() {
         regs.write("R0_clip", 0x03); // Write binary 11 to R0_clip -> sets physical bits 0 and 2.
         assert(regs.read("R0") == 0x05); // R0 becomes 0000 0101 (5)
 
+        // Test 5: A register wider than 64 bits round-trips a >64-bit value
+        // correctly, exercising both the contiguous fast path (W0, W0H) and
+        // the bit-by-bit fallback (W0_even, a masked alias).
+        {
+            nlohmann::json wide_j = {
+                {"name", "WideISA"},
+                {"data_bus", {{"width", 8}}},
+                {"address_bus", {{"width", 16}}},
+                {"memory", {{"size", 1024}}},
+                {"registers", {
+                    {"general_purpose", {
+                        {
+                            {"name", "W0"}, {"width", 100}, {"initial", 0},
+                            {"sub_registers", {
+                                {{"name", "W0H"}, {"width", 36}, {"offset", 64}},
+                                {{"name", "W0_even"}, {"width", 4}, {"mask", "0b0101"}}
+                            }}
+                        }
+                    }},
+                    {"special", {
+                        {{"name", "PC"}, {"width", 16}, {"initial", 0}, {"role", "program_counter"}}
+                    }}
+                }}
+            };
+            Config wide_cfg = Config::from_json(wide_j);
+            RegisterFile wide_regs(wide_cfg);
+
+            // is_contiguous is computed by RegisterFile's constructor into
+            // its own copy of the defs, not onto the Config object itself.
+            assert(wide_regs.get_defs()[0].is_contiguous);
+            assert(wide_regs.get_defs()[1].is_contiguous); // W0H: offset-based
+
+            word_t big_val = parse_word("0xABCDEF0123456789ABCDEF012");
+            wide_regs.write("W0", big_val);
+            assert(wide_regs.read("W0") == big_val);
+
+            // W0H is bits [64, 100) of W0 -- verify it matches a manual shift.
+            word_t expected_high = big_val >> 64;
+            assert(wide_regs.read("W0H") == expected_high);
+
+            // W0_even (masked, non-contiguous: bits 0,2,4,6) still works via
+            // the fallback path on a register backed by a value above 64
+            // bits. Writing 1111 sets all four mapped bits -> 0x55.
+            wide_regs.reset();
+            wide_regs.write("W0_even", 0x0F);
+            assert(wide_regs.read("W0") == 0x55);
+        }
+
         std::cout << "RegisterFile unit tests passed successfully!\n";
         return 0;
     } catch (const std::exception &e) {

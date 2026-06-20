@@ -17,10 +17,10 @@ CPU::CPU(Config &cfg)
     for (auto &dp : dec_peripherals_) {
         mem_.map_io_region(
             dp.get_start_address(), dp.get_end_address(),
-            [&dp, start = dp.get_start_address()](uint64_t addr) {
+            [&dp, start = dp.get_start_address()](word_t addr) {
                 return dp.read(addr - start);
             },
-            [&dp, start = dp.get_start_address()](uint64_t addr, uint64_t val) {
+            [&dp, start = dp.get_start_address()](word_t addr, word_t val) {
                 dp.write(addr - start, val);
             });
     }
@@ -28,7 +28,7 @@ CPU::CPU(Config &cfg)
     reset();
 }
 
-void CPU::load_program(const std::vector<uint8_t> &code, uint64_t address) {
+void CPU::load_program(const std::vector<uint8_t> &code, word_t address) {
     code_ = code;
     load_address_ = address;
 

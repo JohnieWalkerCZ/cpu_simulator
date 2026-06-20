@@ -24,6 +24,17 @@ int main() {
         auto res_8_wrap = cpu.get_alu().execute("SUB", 0, 1, 0, 8);
         assert(res_8_wrap.value == 255);
 
+        // 2b. >64-bit width: ALU must compute and mask correctly using the
+        // full word_t range, not just the low 64 bits.
+        word_t a_wide = parse_word("0xFFFFFFFFFFFFFFFF0000000000000001");
+        word_t b_wide = parse_word("0x00000000000000000000000000000002");
+        auto res_100 = cpu.get_alu().execute("ADD", a_wide, b_wide, 0, 100);
+        word_t expected_100 = (a_wide + b_wide) & mask_for_width(100);
+        assert(res_100.value == expected_100);
+        // Sanity check that the high bits (above bit 63) genuinely survived
+        // the round trip, i.e. this isn't silently a 64-bit computation.
+        assert((res_100.value >> 64) != 0);
+
         // 3. Assemble and execute PUSH / POP
         Assembler assembler(cfg);
         std::vector<uint8_t> code = assembler.assemble("LDI R0, 42\n"

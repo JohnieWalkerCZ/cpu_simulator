@@ -6,10 +6,19 @@
 #include <string>
 #include <unordered_set>
 
-static void parse_mask_pattern(const nlohmann::json &val, uint64_t &pattern,
+// nlohmann::json's get<T>() has no __int128 overload, and JSON numbers lose
+// precision above 64 bits anyway -- values that need the full word_t range
+// must be supplied as a quoted hex/dec/binary string in the config.
+static word_t json_to_word(const nlohmann::json &val) {
+    if (val.is_string())
+        return parse_word(val.get<std::string>());
+    return static_cast<word_t>(val.get<uint64_t>());
+}
+
+static void parse_mask_pattern(const nlohmann::json &val, word_t &pattern,
                                int &pattern_len, int reg_width) {
     if (val.is_number()) {
-        pattern = val.get<uint64_t>();
+        pattern = json_to_word(val);
         pattern_len = reg_width;
         return;
     }
@@ -17,18 +26,18 @@ static void parse_mask_pattern(const nlohmann::json &val, uint64_t &pattern,
     if (str.compare(0, 2, "0b") == 0 || str.compare(0, 2, "0B") == 0) {
         std::string pat_str = str.substr(2);
         pattern_len = static_cast<int>(pat_str.size());
-        pattern = std::stoull(pat_str, nullptr, 2);
+        pattern = parse_word("0b" + pat_str);
     } else if (str.compare(0, 2, "0x") == 0 || str.compare(0, 2, "0X") == 0) {
         pattern_len = static_cast<int>((str.size() - 2) * 4);
-        pattern = std::stoull(str, nullptr, 16);
+        pattern = parse_word(str);
     } else {
         pattern_len = 8;
-        pattern = std::stoull(str, nullptr, 10);
+        pattern = parse_word(str);
     }
 
     if (pattern_len > reg_width) {
         pattern_len = reg_width;
-        pattern &= ((1ULL << pattern_len) - 1);
+        pattern &= mask_for_width(pattern_len);
     }
 }
 
@@ -46,14 +55,9 @@ static void parse_register_recursive(const nlohmann::json &j_reg, Config &cfg,
     reg.parent_index = parent_reg_idx;
 
     if (j_reg.contains("initial")) {
-        if (j_reg["initial"].is_string()) {
-            reg.initial =
-                std::stoull(j_reg["initial"].get<std::string>(), nullptr, 0);
-        } else {
-            reg.initial = j_reg["initial"].get<uint64_t>();
-        }
+        reg.initial = json_to_word(j_reg["initial"]);
     } else {
-        reg.initial = 0ULL;
+        reg.initial = 0;
     }
 
     reg.role = j_reg.value("role", "");
@@ -73,7 +77,7 @@ static void parse_register_recursive(const nlohmann::json &j_reg, Config &cfg,
         }
 
         if (j_reg.contains("mask")) {
-            uint64_t pattern = 0;
+            word_t pattern = 0;
             int pattern_len = 0;
             parse_mask_pattern(j_reg["mask"], pattern, pattern_len, reg.width);
 
@@ -127,7 +131,7 @@ Config Config::from_json(const nlohmann::json &j) {
     cfg.name = j.at("name").get<std::string>();
     cfg.data_width = j["data_bus"].at("width").get<int>();
     cfg.addr_width = j["address_bus"].at("width").get<int>();
-    cfg.memory_size = j["memory"].at("size").get<int>();
+    cfg.memory_size = json_to_word(j["memory"].at("size"));
     cfg.endianness = j["memory"].value("endianness", "little");
     cfg.memory_architecture = j["memory"].value("architecture", "von_neumann");
 
@@ -135,9 +139,8 @@ Config Config::from_json(const nlohmann::json &j) {
         for (const auto &seg : j["memory"]["segments"]) {
             MemorySegmentDef def;
             def.name = seg.at("name").get<std::string>();
-            def.start =
-                std::stoull(seg.at("start").get<std::string>(), nullptr, 0);
-            def.end = std::stoull(seg.at("end").get<std::string>(), nullptr, 0);
+            def.start = parse_word(seg.at("start").get<std::string>());
+            def.end = parse_word(seg.at("end").get<std::string>());
             def.r = seg.value("R", true);
             def.w = seg.value("W", true);
             def.x = seg.value("X", true);
@@ -145,7 +148,7 @@ Config Config::from_json(const nlohmann::json &j) {
         }
     } else {
         cfg.memory_segments.push_back(
-            {"FLAT_RAM", 0, (uint32_t)cfg.memory_size - 1, true, true, true});
+            {"FLAT_RAM", 0, cfg.memory_size - 1, true, true, true});
     }
 
     int next_phys_idx = 0;
@@ -282,13 +285,13 @@ Config Config::from_json(const nlohmann::json &j) {
 
             if (p.contains("address")) {
                 def.address_start =
-                    std::stoull(p.at("address").get<std::string>(), nullptr, 0);
+                    parse_word(p.at("address").get<std::string>());
                 def.address_end = def.address_start;
             } else {
-                def.address_start = std::stoull(
-                    p.at("address_start").get<std::string>(), nullptr, 0);
-                def.address_end = std::stoull(
-                    p.at("address_end").get<std::string>(), nullptr, 0);
+                def.address_start =
+                    parse_word(p.at("address_start").get<std::string>());
+                def.address_end =
+                    parse_word(p.at("address_end").get<std::string>());
             }
 
             if (p.contains("parameters")) {
@@ -302,7 +305,9 @@ Config Config::from_json(const nlohmann::json &j) {
             if (p.contains("internal_state")) {
                 for (auto &[key, val] : p["internal_state"].items()) {
                     def.internal_state[key] =
-                        val.is_number() ? val.get<uint64_t>() : 0;
+                        (val.is_number() || val.is_string())
+                            ? json_to_word(val)
+                            : 0;
                 }
             }
 
@@ -313,14 +318,9 @@ Config Config::from_json(const nlohmann::json &j) {
                     rdef.offset = r.at("offset").get<int>();
                     rdef.size_bytes = r.value("size_bytes", 1);
                     rdef.access = r.value("access", "rw");
-                    rdef.initial =
-                        r.contains("initial")
-                            ? (r["initial"].is_number()
-                                   ? r["initial"].get<uint64_t>()
-                                   : std::stoull(
-                                         r["initial"].get<std::string>(),
-                                         nullptr, 0))
-                            : 0;
+                    rdef.initial = r.contains("initial")
+                                      ? json_to_word(r["initial"])
+                                      : 0;
 
                     if (r.contains("on_read"))
                         rdef.on_read = r["on_read"];
@@ -355,18 +355,19 @@ bool Config::validate() const {
     std::unordered_set<uint8_t> opcodes;
     std::unordered_set<uint8_t> alu_codes;
 
-    if (data_width < 4 || data_width > 64 ||
-        (data_width & (data_width - 1)) != 0) {
+    // Widths no longer need to be a power of two -- any multiple of 4 bits
+    // between 4 and 128 is a valid bus/register width.
+    if (data_width < 4 || data_width > 128 || (data_width % 4) != 0) {
         return false;
     }
 
-    if (addr_width < 4 || addr_width > 64 ||
-        (addr_width & (addr_width - 1)) != 0) {
+    if (addr_width < 4 || addr_width > 128 || (addr_width % 4) != 0) {
         return false;
     }
 
-    uint64_t max_adressable =
-        (addr_width == 64) ? UINT64_MAX : (1ULL << addr_width);
+    word_t max_adressable = (addr_width >= 128)
+                                ? ~static_cast<word_t>(0)
+                                : (static_cast<word_t>(1) << addr_width);
     if (memory_size > max_adressable) {
         return false;
     }
@@ -377,11 +378,10 @@ bool Config::validate() const {
 
         names.insert(reg.name);
 
-        if (reg.width < 1 || reg.width > 64)
+        if (reg.width < 1 || reg.width > 128)
             return false;
 
-        uint64_t max_val =
-            (reg.width == 64) ? UINT64_MAX : (1ULL << reg.width) - 1;
+        word_t max_val = mask_for_width(reg.width);
         if (reg.initial > max_val)
             return false;
 

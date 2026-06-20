@@ -64,18 +64,18 @@ void Executor::step_uop() {
         int unit_bits = config_.data_width;
         int unit_bytes = (config_.data_width + 7) / 8;
 
-        uint64_t first_unit = mem_.read(static_cast<uint32_t>(fetch_pc_), true);
-        first_unit &= ((1ULL << unit_bits) - 1);
+        word_t first_unit = mem_.read(fetch_pc_, true);
+        first_unit &= mask_for_width(unit_bits);
 
         uint8_t opcode = decoder_.peek_opcode(first_unit);
         int total_bits = decoder_.get_total_bits(opcode);
         units_fetched_ = (total_bits + unit_bits - 1) / unit_bits;
 
-        uint64_t raw = first_unit;
+        word_t raw = first_unit;
         for (int i = 1; i < units_fetched_; ++i) {
-            uint64_t next_unit = mem_.read(
-                static_cast<uint32_t>(fetch_pc_ + i * unit_bytes), true);
-            next_unit &= ((1ULL << unit_bits) - 1);
+            word_t next_unit =
+                mem_.read(fetch_pc_ + static_cast<word_t>(i * unit_bytes), true);
+            next_unit &= mask_for_width(unit_bits);
             raw = (raw << unit_bits) | next_unit;
         }
 
@@ -90,7 +90,7 @@ void Executor::step_uop() {
     case ExecutionState::DECODE: {
         int fetched_bits = units_fetched_ * config_.data_width;
 
-        uint64_t first_word =
+        word_t first_word =
             current_inst_.raw_bits >> (fetched_bits - config_.data_width);
         uint8_t opcode = decoder_.peek_opcode(first_word);
 
@@ -98,7 +98,8 @@ void Executor::step_uop() {
 
         if (!current_inst_.is_valid)
             throw std::runtime_error("Decode Error at PC " +
-                                     std::to_string(regs_.get_pc()) + " -> " +
+                                     word_to_dec_string(regs_.get_pc()) +
+                                     " -> " +
                                      current_inst_.error);
 
         uop_index_ = 0;
@@ -252,13 +253,12 @@ void Executor::step_uop() {
 
         if (interrupt_pending_) {
             if (sp_idx_ != -1) {
-                uint64_t current_sp = regs_.read(sp_idx_);
+                word_t current_sp = regs_.read(sp_idx_);
                 int addr_bytes = (config_.addr_width + 7) / 8;
-                uint64_t new_sp = current_sp - addr_bytes;
+                word_t new_sp = current_sp - static_cast<word_t>(addr_bytes);
                 regs_.set_sp(new_sp);
 
-                mem_.write(static_cast<uint32_t>(new_sp), regs_.get_pc(),
-                           config_.addr_width);
+                mem_.write(new_sp, regs_.get_pc(), config_.addr_width);
             }
 
             regs_.set_pc(pending_interrupt_id_);
@@ -279,16 +279,16 @@ void Executor::step_uop() {
 
 void Executor::perform_uop(const MicroOp &uop) {
     if (uop.action == "copy") {
-        uint64_t val = resolve_operand(uop.args.at("source"));
+        word_t val = resolve_operand(uop.args.at("source"));
         write_operand(uop.args.at("dest"), val);
 
         last_data_val_ = val;
 
     } else if (uop.action == "alu") {
-        uint64_t a = resolve_operand(uop.args.at("a"));
-        uint64_t b =
+        word_t a = resolve_operand(uop.args.at("a"));
+        word_t b =
             uop.args.count("b") ? resolve_operand(uop.args.at("b")) : 0;
-        uint64_t c =
+        word_t c =
             uop.args.count("c") ? resolve_operand(uop.args.at("c")) : 0;
 
         int op_width = get_operand_width(uop.args.at("out"));
@@ -307,36 +307,36 @@ void Executor::perform_uop(const MicroOp &uop) {
         }
 
     } else if (uop.action == "mem_read") {
-        uint64_t addr = resolve_operand(uop.args.at("addr"));
+        word_t addr = resolve_operand(uop.args.at("addr"));
         int width = get_operand_width(uop.args.at("out"));
-        uint64_t val = mem_.read(static_cast<uint32_t>(addr), false, width);
+        word_t val = mem_.read(addr, false, width);
         write_operand(uop.args.at("out"), val);
 
         last_addr_val_ = addr;
         last_data_val_ = val;
 
     } else if (uop.action == "mem_write") {
-        uint64_t addr = resolve_operand(uop.args.at("addr"));
-        uint64_t data = resolve_operand(uop.args.at("data"));
+        word_t addr = resolve_operand(uop.args.at("addr"));
+        word_t data = resolve_operand(uop.args.at("data"));
         int width = get_operand_width(uop.args.at("data"));
-        mem_.write(static_cast<uint32_t>(addr), data, width);
+        mem_.write(addr, data, width);
 
         last_addr_val_ = addr;
         last_data_val_ = data;
 
     } else if (uop.action == "port_read") {
-        uint64_t port = resolve_operand(uop.args.at("port"));
+        word_t port = resolve_operand(uop.args.at("port"));
         int width = get_operand_width(uop.args.at("out"));
-        uint64_t val = mem_.port_read(static_cast<uint32_t>(port));
+        word_t val = mem_.port_read(port);
         write_operand(uop.args.at("out"), val);
 
         last_addr_val_ = port;
         last_data_val_ = val;
 
     } else if (uop.action == "port_write") {
-        uint64_t port = resolve_operand(uop.args.at("port"));
-        uint64_t data = resolve_operand(uop.args.at("data"));
-        mem_.port_write(static_cast<uint32_t>(port), data);
+        word_t port = resolve_operand(uop.args.at("port"));
+        word_t data = resolve_operand(uop.args.at("data"));
+        mem_.port_write(port, data);
 
         last_addr_val_ = port;
         last_data_val_ = data;
@@ -344,7 +344,7 @@ void Executor::perform_uop(const MicroOp &uop) {
     } else if (uop.action == "coproc_read") {
         int cp_id = static_cast<int>(resolve_operand(uop.args.at("cp")));
         int reg_id = static_cast<int>(resolve_operand(uop.args.at("reg")));
-        uint64_t val = regs_.read_coproc(cp_id, reg_id);
+        word_t val = regs_.read_coproc(cp_id, reg_id);
         write_operand(uop.args.at("out"), val);
 
         last_data_val_ = val;
@@ -352,7 +352,7 @@ void Executor::perform_uop(const MicroOp &uop) {
     } else if (uop.action == "coproc_write") {
         int cp_id = static_cast<int>(resolve_operand(uop.args.at("cp")));
         int reg_id = static_cast<int>(resolve_operand(uop.args.at("reg")));
-        uint64_t data = resolve_operand(uop.args.at("data"));
+        word_t data = resolve_operand(uop.args.at("data"));
         regs_.write_coproc(cp_id, reg_id, data);
 
         last_data_val_ = data;
@@ -361,7 +361,7 @@ void Executor::perform_uop(const MicroOp &uop) {
         bool cond = true;
         if (uop.args.count("condition")) {
             std::string c_str = uop.args.at("condition");
-            uint64_t f_register =
+            word_t f_register =
                 (flags_idx_ != -1) ? regs_.read(flags_idx_) : 0;
 
             bool invert = false;
@@ -401,7 +401,7 @@ void Executor::perform_uop(const MicroOp &uop) {
         }
 
         if (cond) {
-            uint64_t target = resolve_operand(uop.args.at("target"));
+            word_t target = resolve_operand(uop.args.at("target"));
             last_addr_val_ = target;
             if (uop.args.count("relative") &&
                 uop.args.at("relative") == "true") {
@@ -424,17 +424,17 @@ void Executor::pre_resolve_diagnostics() {
     const auto &uop = uops[0];
 
     if (uop.action == "copy") {
-        uint64_t val = uop.args.count("source")
-                           ? resolve_operand(uop.args.at("source"))
-                           : 0;
+        word_t val = uop.args.count("source")
+                        ? resolve_operand(uop.args.at("source"))
+                        : 0;
         last_data_val_ = val;
 
     } else if (uop.action == "alu") {
-        uint64_t a =
+        word_t a =
             uop.args.count("a") ? resolve_operand(uop.args.at("a")) : 0;
-        uint64_t b =
+        word_t b =
             uop.args.count("b") ? resolve_operand(uop.args.at("b")) : 0;
-        uint64_t c =
+        word_t c =
             uop.args.count("c") ? resolve_operand(uop.args.at("c")) : 0;
 
         int op_width = uop.args.count("out")
@@ -449,34 +449,34 @@ void Executor::pre_resolve_diagnostics() {
         }
 
     } else if (uop.action == "mem_read") {
-        uint64_t addr =
+        word_t addr =
             uop.args.count("addr") ? resolve_operand(uop.args.at("addr")) : 0;
         last_addr_val_ = addr;
 
         int width = uop.args.count("out")
                         ? get_operand_width(uop.args.at("out"))
                         : config_.data_width;
-        uint64_t val = mem_.read(static_cast<uint32_t>(addr), false, width);
+        word_t val = mem_.read(addr, false, width);
         last_data_val_ = val;
 
     } else if (uop.action == "mem_write") {
-        uint64_t addr =
+        word_t addr =
             uop.args.count("addr") ? resolve_operand(uop.args.at("addr")) : 0;
-        uint64_t data =
+        word_t data =
             uop.args.count("data") ? resolve_operand(uop.args.at("data")) : 0;
 
         last_addr_val_ = addr;
         last_data_val_ = data;
 
     } else if (uop.action == "branch") {
-        uint64_t target = uop.args.count("target")
-                              ? resolve_operand(uop.args.at("target"))
-                              : 0;
+        word_t target = uop.args.count("target")
+                           ? resolve_operand(uop.args.at("target"))
+                           : 0;
         last_addr_val_ = target;
     }
 }
 
-uint64_t Executor::resolve_operand(const std::string &arg) {
+word_t Executor::resolve_operand(const std::string &arg) {
     if (arg.empty())
         return 0;
 
@@ -499,7 +499,8 @@ uint64_t Executor::resolve_operand(const std::string &arg) {
             return (flags_idx_ != -1) ? regs_.read(flags_idx_) : 0;
         if (reg == "NEXT_PC") {
             int unit_bytes = (config_.data_width + 7) / 8;
-            return regs_.get_pc() + units_fetched_ * unit_bytes;
+            return regs_.get_pc() +
+                  static_cast<word_t>(units_fetched_ * unit_bytes);
         }
         return regs_.read(reg);
     }
@@ -510,13 +511,13 @@ uint64_t Executor::resolve_operand(const std::string &arg) {
             return config_.data_width / 8 > 0 ? config_.data_width / 8 : 1;
         if (val == "ADDR_SIZE")
             return (config_.addr_width + 7) / 8;
-        return std::stoull(val, nullptr, 0);
+        return parse_word(val);
     }
 
     return 0;
 }
 
-void Executor::write_operand(const std::string &arg, uint64_t value) {
+void Executor::write_operand(const std::string &arg, word_t value) {
     if (arg.empty())
         return;
 

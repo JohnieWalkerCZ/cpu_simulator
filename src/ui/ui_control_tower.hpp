@@ -20,7 +20,7 @@ inline void UI_ControlTower(CPU &cpu, GUIState &state,
         try {
             CaptureSnapshot(cpu, state);
             cpu.step();
-            state.last_breakpoint_hit = (uint64_t)-1;
+            state.last_breakpoint_hit = ~static_cast<word_t>(0);
         } catch (const std::exception &e) {
             state.is_running = false;
             state.cpu_error_message = e.what();
@@ -31,7 +31,7 @@ inline void UI_ControlTower(CPU &cpu, GUIState &state,
         try {
             CaptureSnapshot(cpu, state);
             cpu.step_uop();
-            state.last_breakpoint_hit = (uint64_t)-1;
+            state.last_breakpoint_hit = ~static_cast<word_t>(0);
         } catch (const std::exception &e) {
             state.is_running = false;
             state.cpu_error_message = e.what();
@@ -47,14 +47,13 @@ inline void UI_ControlTower(CPU &cpu, GUIState &state,
         state.history.pop_back();
 
         cpu.get_registers().set_physical_registers(snap.physical_registers);
-        cpu.get_memory().raw() = snap.memory;
-        cpu.get_memory().raw_instruction_mut() = snap.instruction_memory;
+        cpu.get_memory().restore_snapshot(snap.mem_snapshot);
 
         cpu.get_executor().restore_snapshot(snap.executor_state);
 
         state.is_running = false;
         state.cpu_error_message = "";
-        state.last_breakpoint_hit = (uint64_t)-1;
+        state.last_breakpoint_hit = ~static_cast<word_t>(0);
         state.highlighter = BusHighlighter();
     }
 
@@ -68,7 +67,7 @@ inline void UI_ControlTower(CPU &cpu, GUIState &state,
         ResetPeripheralsState(cpu.get_config(), p_state);
         state.cpu_error_message = "";
         state.history.clear();
-        state.last_breakpoint_hit = (uint64_t)-1;
+        state.last_breakpoint_hit = ~static_cast<word_t>(0);
     }
 
     if (!state.cpu_error_message.empty()) {
@@ -90,7 +89,9 @@ inline void UI_ControlTower(CPU &cpu, GUIState &state,
     ImGui::Separator();
     const char *speed_unit = state.run_by_uop ? "%.1f Hz (Clock Cycles)"
                                               : "%.1f IPS (Instructions/s)";
-    ImGui::SliderFloat("Speed", &state.clock_speed, 0.5f, 100.0f, speed_unit);
+    float speed = state.clock_speed.load();
+    if (ImGui::SliderFloat("Speed", &speed, 0.5f, 100.0f, speed_unit))
+        state.clock_speed = speed;
 
     ImGui::Separator();
     ImGui::Text("Total Cycles: %d", cpu.get_executor().get_total_cycles());

@@ -21,7 +21,7 @@ inline void UI_StackFrameExplorer(CPU &cpu, GUIState &gui) {
         return;
     }
 
-    uint64_t sp = regs.read(sp_idx);
+    word_t sp = regs.read(sp_idx);
     auto &sf = gui.stack_frames;
 
     ImGui::Text("SP = %s", FormatHexValue(sp, addr_width).c_str());
@@ -54,21 +54,21 @@ inline void UI_StackFrameExplorer(CPU &cpu, GUIState &gui) {
         return;
     }
 
-    uint64_t range_end = stack_seg ? stack_seg->end
-                                   : std::min<uint64_t>(sp + 64, mem.size() - 1);
+    word_t range_end = stack_seg ? stack_seg->end
+                                : std::min<word_t>(sp + 64, mem.size() - 1);
     if (range_end >= mem.size())
         range_end = mem.size() - 1;
 
     // Guard against pathologically large segments flooding the immediate-mode
     // row list -- the visualizer is meant for inspecting active stack depth,
     // not dumping an entire address space.
-    const uint64_t max_rows = 2048;
+    const word_t max_rows = 2048;
     if (range_end - sp + 1 > max_rows)
         range_end = sp + max_rows - 1;
 
     // Boundaries closer to SP are visited first while walking down from SP.
-    std::vector<uint64_t> boundaries;
-    for (uint64_t b : sf.frame_boundaries) {
+    std::vector<word_t> boundaries;
+    for (word_t b : sf.frame_boundaries) {
         if (b > sp && b <= range_end + 1)
             boundaries.push_back(b);
     }
@@ -77,9 +77,9 @@ inline void UI_StackFrameExplorer(CPU &cpu, GUIState &gui) {
     ImGui::BeginChild("StackScroll");
 
     size_t boundary_idx = 0;
-    uint64_t frame_top = sp;
+    word_t frame_top = sp;
 
-    for (uint64_t addr = sp; addr <= range_end; ++addr) {
+    for (word_t addr = sp; addr <= range_end; ++addr) {
         while (boundary_idx < boundaries.size() &&
                addr == boundaries[boundary_idx]) {
             ImGui::Separator();
@@ -90,16 +90,17 @@ inline void UI_StackFrameExplorer(CPU &cpu, GUIState &gui) {
             boundary_idx++;
         }
 
-        uint8_t val = mem.raw()[addr];
-        uint64_t offset = addr - frame_top;
+        uint8_t val = mem.peek(addr);
+        word_t offset = addr - frame_top;
         bool is_sp = (addr == sp);
 
-        ImGui::PushID(static_cast<int>(addr));
+        ImGui::PushID((int)addr);
         if (is_sp)
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.2f, 1.0f, 0.2f, 1.0f));
 
-        ImGui::Text("%s   +%llu   %s", FormatHexValue(addr, addr_width).c_str(),
-                   (unsigned long long)offset, FormatHexValue(val, 8).c_str());
+        ImGui::Text("%s   +%s   %s", FormatHexValue(addr, addr_width).c_str(),
+                   word_to_dec_string(offset).c_str(),
+                   FormatHexValue(val, 8).c_str());
 
         if (is_sp) {
             ImGui::PopStyleColor();
@@ -108,10 +109,10 @@ inline void UI_StackFrameExplorer(CPU &cpu, GUIState &gui) {
         }
 
         if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Address: %s\nByte: %s (%u)\nFrame offset: +%llu",
+            ImGui::SetTooltip("Address: %s\nByte: %s (%u)\nFrame offset: +%s",
                               FormatHexValue(addr, addr_width).c_str(),
                               FormatHexValue(val, 8).c_str(), val,
-                              (unsigned long long)offset);
+                              word_to_dec_string(offset).c_str());
         }
         ImGui::PopID();
     }

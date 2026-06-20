@@ -14,8 +14,9 @@ inline void UI_MicrocodePipeline(CPU &cpu) {
         ImGui::TextDisabled("State: FETCH NEXT...");
     } else if (state == ExecutionState::DECODE) {
         ImGui::Text("Status: Decoding Instruction...");
-        ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f), "Raw Bits: 0x%llX",
-                           current_inst.raw_bits);
+        ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f), "Raw Bits: 0x%s",
+                           word_to_hex_string(current_inst.raw_bits, 128)
+                               .c_str());
         ImGui::Separator();
         ImGui::TextDisabled("Identifying opcode and operands...");
     } else {
@@ -30,7 +31,11 @@ inline void UI_MicrocodePipeline(CPU &cpu) {
         if (inst_def) {
             ImGui::Text("Instruction: %s (0x%02X)", inst_def->name.c_str(),
                         current_inst.opcode);
-            ImGui::TextDisabled("Raw: 0x%llX", current_inst.raw_bits);
+            ImGui::TextDisabled(
+                "Raw: 0x%s",
+                word_to_hex_string(current_inst.raw_bits,
+                                   current_inst.length_bytes * 8)
+                    .c_str());
             ImGui::Separator();
 
             std::string mode_str = "DYNAMIC (MICRO-OP)";
@@ -108,7 +113,7 @@ inline void UI_MicrocodePipeline(CPU &cpu) {
                                                : "ERR";
                         } else if (current_inst.imms.count(token)) {
                             resolved_val =
-                                std::to_string(current_inst.imms.at(token));
+                                word_to_dec_string(current_inst.imms.at(token));
                         }
                     } else if (val[0] == '$') {
                         resolved_val = val.substr(1);
