@@ -186,7 +186,7 @@ inline void DrawMemorySegmentPanel(
     if (remaining < 0.0f)
         remaining = 0.0f;
 
-    uint64_t total_bytes = 0;
+    word_t total_bytes = 0;
     for (const auto &seg : sorted_segments)
         total_bytes += (seg.end - seg.start + 1);
     if (total_bytes == 0)
@@ -195,7 +195,7 @@ inline void DrawMemorySegmentPanel(
     float y = body_top;
     for (size_t i = 0; i < sorted_segments.size(); ++i) {
         const auto &seg = sorted_segments[i];
-        uint64_t seg_bytes = seg.end - seg.start + 1;
+        word_t seg_bytes = seg.end - seg.start + 1;
         float band_h = min_band_h + remaining * (static_cast<float>(seg_bytes) /
                                                   static_cast<float>(total_bytes));
         float y0 = y;
@@ -453,7 +453,7 @@ inline void DrawRegisterFileBlock(
                                IM_COL32(100, 100, 100, 150), 1.5f * gui.zoom);
         }
 
-        uint64_t val = 0;
+        word_t val = 0;
         try {
             val = regs.read(def.name);
         } catch (...) {
@@ -927,6 +927,17 @@ inline void UI_SystemSchematic(CPU &cpu, GUIState &gui) {
                  ImGuiWindowFlags_NoScrollbar |
                      ImGuiWindowFlags_NoScrollWithMouse);
 
+    // The diagram's natural extent grows with the architecture (register
+    // count, peripheral count, etc. -- see reg_file_h/mem_h/mmio_h below), so
+    // it's wrapped in a scrollable child instead of the fixed-size window:
+    // large architectures pan via the scrollbars (or the existing
+    // right-drag/wheel-zoom) instead of rendering off-screen with no way to
+    // reach the rest of the diagram. Mouse-wheel scrolling is disabled on the
+    // child so the wheel keeps driving the existing zoom behavior below.
+    ImGui::BeginChild("SchematicCanvas", ImVec2(0, 0), false,
+                      ImGuiWindowFlags_HorizontalScrollbar |
+                          ImGuiWindowFlags_NoScrollWithMouse);
+
     BusHighlighter &h = gui.highlighter;
     ImDrawList *draw_list = ImGui::GetWindowDrawList();
     ImVec2 origin = ImGui::GetCursorScreenPos();
@@ -986,20 +997,28 @@ inline void UI_SystemSchematic(CPU &cpu, GUIState &gui) {
     float reg_file_h = reg_count * row_h;
     ImVec2 box_size = ImVec2(140.0f * zoom, 50.0f * zoom);
 
+    // Memory box width is computed here (rather than alongside DrawMemoryBlock
+    // below) so the column layout can reference it directly instead of
+    // duplicating its unzoomed width as a separate literal.
+    float mem_w = 160.0f * zoom;
+
     auto Trans = [&](ImVec2 p) -> ImVec2 {
         return ImVec2((p.x - origin.x) * zoom + origin.x + gui.pan.x,
                       (p.y - origin.y) * zoom + origin.y + gui.pan.y);
     };
 
-    // 2. Base coordinates in "world space"
+    // 2. Base coordinates in "world space", each column placed just past the
+    // actual computed width of the block(s) in the column before it, so
+    // widening any block (e.g. a wider register file from a deeper bit grid)
+    // automatically pushes every column to its right outward instead of
+    // overlapping it.
     float col1_x = origin.x + 40.0f;
     float col2_x = col1_x + (reg_file_w / zoom) + 65.0f;
-    float col3_x = col2_x + 140.0f + 65.0f;
-    // 160.0f mirrors the Memory box's unzoomed width (see mem_w below), so the
-    // Peripherals box gets its own column instead of stacking directly above
-    // Memory, where the control bus's vertical drop into Memory would have to
-    // cut straight through it.
-    float col4_x = col3_x + 160.0f + 65.0f;
+    float col3_x = col2_x + (box_size.x / zoom) + 65.0f;
+    // The Peripherals box gets its own column instead of stacking directly
+    // above Memory, where the control bus's vertical drop into Memory would
+    // have to cut straight through it.
+    float col4_x = col3_x + (mem_w / zoom) + 65.0f;
 
     // Apply Transformation immediately, keeping base items in screen space
     ImVec2 reg_pos = Trans(ImVec2(col1_x, origin.y + 110.0f));
@@ -1109,7 +1128,6 @@ inline void UI_SystemSchematic(CPU &cpu, GUIState &gui) {
     DrawALUBlock(draw_list, alu_cx, alu_top_y, alu_poly, h.alu_path, col_box,
                  col_text, col_inactive, col_active, current_alu_op_name, zoom);
 
-    float mem_w = 160.0f * gui.zoom;
     float mem_h_floor = cpu.get_memory().is_harvard() ? 286.0f : 240.0f;
     float mem_h = reg_file_h > mem_h_floor ? reg_file_h : mem_h_floor;
     DrawMemoryBlock(draw_list, mem_pos, mem_w, mem_h, cpu, gui, col_box,
@@ -1214,5 +1232,23 @@ inline void UI_SystemSchematic(CPU &cpu, GUIState &gui) {
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Click to focus Micro-op Pipeline panel");
 
+    // Declare the canvas's natural (zoomed but not pan-shifted) extent so the
+    // child's scrollbars appear once it exceeds the visible region. Pan is
+    // subtracted back out here since it's an independent navigation offset
+    // layered on top by Trans(), not part of the diagram's actual size --
+    // otherwise panning would fight with the scrollbar position.
+    float content_right = std::max({reg_pos.x + reg_file_w, mem_pos.x + mem_w,
+                                    mmio_pos.x + box_size.x}) -
+                          gui.pan.x;
+    float content_bottom = std::max({reg_pos.y + reg_file_h, mem_pos.y + mem_h,
+                                     mmio_pos.y + mmio_h}) -
+                           gui.pan.y;
+    float content_w = content_right - origin.x + 60.0f * zoom;
+    float content_h = content_bottom - origin.y + 60.0f * zoom;
+
+    ImGui::SetCursorScreenPos(origin);
+    ImGui::Dummy(ImVec2(std::max(content_w, 0.0f), std::max(content_h, 0.0f)));
+
+    ImGui::EndChild();
     ImGui::End();
 }
