@@ -146,6 +146,75 @@ int main() {
             assert(edge_mem.read(0) == 0x11223344);
         }
 
+        // 7. Regression: a single-byte access at the very top of memory must
+        // succeed even when the architecture's native word is wider than a
+        // byte (is_valid_address used to bounds-check against the fixed
+        // word size instead of the actual access width, rejecting legal
+        // byte accesses near the end of memory).
+        {
+            Config wide_cfg = create_mock_config(65536, 16, {}, 16);
+            Memory wide_mem(wide_cfg);
+
+            wide_mem.write(65535, 0xAB, /*width_bits=*/8);
+            assert(wide_mem.read(65535, false, /*width_bits=*/8) == 0xAB);
+
+            // A full 16-bit (2-byte) access that actually runs past the end
+            // of memory must still be rejected.
+            try {
+                wide_mem.write(65535, 0x1234, /*width_bits=*/16);
+                assert(false);
+            } catch (const std::runtime_error &e) {
+                // Expected: out of bounds.
+            }
+        }
+
+        // 8. Harvard architecture: instruction memory and data memory are
+        // physically separate page tables. A byte loaded as code (via
+        // write_bytes, as CPU::load_program does) must be visible to
+        // fetches (read(addr, /*is_execute=*/true)) but invisible to plain
+        // data reads, and vice versa for a byte written as data. This
+        // documented behavior (CONFIGURATION.md 2.1) had no test coverage.
+        {
+            Config harvard_cfg = create_mock_config(256, 8, {}, 8);
+            harvard_cfg.memory_architecture = "harvard";
+            Memory hmem(harvard_cfg);
+
+            hmem.write_bytes(0x10, {0xAB}); // loads into instruction space
+            assert(hmem.read(0x10, /*is_execute=*/true) == 0xAB);
+            assert(hmem.read(0x10, /*is_execute=*/false) == 0);
+
+            hmem.write(0x20, 0xCD); // plain write always targets data space
+            assert(hmem.read(0x20, /*is_execute=*/false) == 0xCD);
+            assert(hmem.read(0x20, /*is_execute=*/true) == 0);
+        }
+
+        // 9. Port I/O regions (port_read/port_write) are a separate address
+        // space from memory-mapped I/O and bypass segment permission
+        // checks entirely -- used by the "port_read"/"port_write" microcode
+        // actions. No test previously exercised map_port_region at all.
+        {
+            Config cfg = create_mock_config(256, 8, {}, 8);
+            Memory mem(cfg);
+
+            word_t last_written_port = 0, last_written_val = 0;
+            mem.map_port_region(
+                0x00, 0x0F,
+                [](word_t port) -> word_t { return port * 10; },
+                [&](word_t port, word_t val) {
+                    last_written_port = port;
+                    last_written_val = val;
+                });
+
+            assert(mem.port_read(0x05) == 50);
+            mem.port_write(0x05, 42);
+            assert(last_written_port == 0x05 && last_written_val == 42);
+
+            // An unmapped port must not throw -- reads default to 0, writes
+            // are silently dropped.
+            assert(mem.port_read(0x50) == 0);
+            mem.port_write(0x50, 99); // must not throw
+        }
+
         std::cout << "Memory unit tests passed successfully!\n";
         return 0;
     } catch (const std::exception &e) {

@@ -80,6 +80,7 @@ struct CPUSnapshot {
     std::vector<word_t> physical_registers;
     Memory::Snapshot mem_snapshot;
     Executor::ExecutorSnapshot executor_state;
+    std::vector<DeclarativePeripheral::Snapshot> peripheral_snapshots;
 };
 
 struct StackFrameState {
@@ -163,7 +164,7 @@ inline void UpdateHighlights(CPU &cpu, BusHighlighter &h, float delta_time) {
                 peek_first_unit &= mask_for_width(unit_bits);
 
                 Decoder peek_decoder(config);
-                uint8_t peek_opcode = peek_decoder.peek_opcode(peek_first_unit);
+                uint16_t peek_opcode = peek_decoder.peek_opcode(peek_first_unit);
                 int peek_total_bits = peek_decoder.get_total_bits(peek_opcode);
                 int peek_units = (peek_total_bits + unit_bits - 1) / unit_bits;
 
@@ -805,6 +806,8 @@ inline void CaptureSnapshot(CPU &cpu, GUIState &gui) {
     snap.physical_registers = cpu.get_registers().get_physical_registers();
     snap.mem_snapshot = cpu.get_memory().capture_snapshot();
     snap.executor_state = cpu.get_executor().take_snapshot();
+    for (const auto &peripheral : cpu.get_peripherals())
+        snap.peripheral_snapshots.push_back(peripheral.capture_snapshot());
 
     gui.history.push_back(snap);
     if (gui.history.size() > 1000) {

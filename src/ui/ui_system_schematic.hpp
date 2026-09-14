@@ -209,12 +209,10 @@ inline void DrawMemorySegmentPanel(
                            ImVec2(panel_pos.x + 8.0f * zoom, y0 + 3.0f * zoom),
                            row_text_col, seg.name.c_str());
 
-        char addr_buf[32];
-        snprintf(addr_buf, sizeof(addr_buf), "%s-%s",
-                FormatHexValue(seg.start, addr_width).c_str(),
-                FormatHexValue(seg.end, addr_width).c_str());
+        const std::string addr_buf = FormatHexValue(seg.start, addr_width) + "-" +
+                                    FormatHexValue(seg.end, addr_width);
         float addr_scale = zoom * 0.75f;
-        ImVec2 addr_text_size = ImGui::CalcTextSize(addr_buf);
+        ImVec2 addr_text_size = ImGui::CalcTextSize(addr_buf.c_str());
         addr_text_size.x *= addr_scale;
         addr_text_size.y *= addr_scale;
         ImU32 addr_col = MixGlowColor(row_text_col, col_inactive, 0.3f);
@@ -223,7 +221,7 @@ inline void DrawMemorySegmentPanel(
             ImVec2(panel_max.x - addr_text_size.x - 6.0f * zoom,
                   y0 + 3.0f * zoom +
                       (ImGui::GetFontSize() * zoom - addr_text_size.y) / 2.0f),
-            addr_col, addr_buf);
+            addr_col, addr_buf.c_str());
 
         if (i > 0) {
             draw_list->AddLine(ImVec2(panel_pos.x, y0),

@@ -29,8 +29,9 @@ inline void UI_MicrocodePipeline(CPU &cpu) {
         }
 
         if (inst_def) {
-            ImGui::Text("Instruction: %s (0x%02X)", inst_def->name.c_str(),
-                        current_inst.opcode);
+            ImGui::Text("Instruction: %s (0x%s)", inst_def->name.c_str(),
+                        word_to_hex_string(current_inst.opcode,
+                                           cpu.get_config().opcode_width).c_str());
             ImGui::TextDisabled(
                 "Raw: 0x%s",
                 word_to_hex_string(current_inst.raw_bits,

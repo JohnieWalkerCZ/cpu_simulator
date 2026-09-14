@@ -34,7 +34,7 @@ Assembler::Assembler(const Config &config) : config_(config) {
     reg_field_width_ =
         Decoder::calculate_reg_bits(static_cast<int>(config.registers.size()));
 
-    opcode_field_width_ = (config.data_width >= 8) ? 8 : config.data_width;
+    opcode_field_width_ = config.opcode_width;
 }
 
 std::vector<std::string> Assembler::tokenize(const std::string &line) {

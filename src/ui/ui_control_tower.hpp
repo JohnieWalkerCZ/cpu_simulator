@@ -50,6 +50,9 @@ inline void UI_ControlTower(CPU &cpu, GUIState &state,
         cpu.get_memory().restore_snapshot(snap.mem_snapshot);
 
         cpu.get_executor().restore_snapshot(snap.executor_state);
+        auto &peripherals = cpu.get_peripherals();
+        for (size_t i = 0; i < peripherals.size() && i < snap.peripheral_snapshots.size(); ++i)
+            peripherals[i].restore_snapshot(snap.peripheral_snapshots[i]);
 
         state.is_running = false;
         state.cpu_error_message = "";

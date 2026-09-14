@@ -86,6 +86,7 @@ class Memory {
     PageTable instruction_pages_;
 
     int word_size_bytes_;
+    int data_width_bits_;
     word_t mask_;
 
     std::vector<MMIORegion> io_regions_;

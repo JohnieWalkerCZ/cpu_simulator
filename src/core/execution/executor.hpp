@@ -120,10 +120,10 @@ class Executor {
     bool halted_ = false;
     int cycles_ = 0;
     word_t fetch_pc_ = 0;
-    uint64_t fetched_bits_;
-    int pc_idx_;
-    int sp_idx_;
-    int flags_idx_;
+    uint64_t fetched_bits_ = 0;
+    int pc_idx_ = -1;
+    int sp_idx_ = -1;
+    int flags_idx_ = -1;
     word_t raw_inst_bits_ = 0;
     int total_bits_to_decode_ = 0;
     int current_uop_cycles_ = 0;
@@ -138,6 +138,8 @@ class Executor {
     word_t last_alu_a_ = 0;
     word_t last_alu_b_ = 0;
     word_t last_alu_out_ = 0;
+
+    std::unordered_map<uint16_t, std::vector<MicroOp>> microcode_map_;
 
     void perform_uop(const MicroOp &uop);
     void pre_resolve_diagnostics();

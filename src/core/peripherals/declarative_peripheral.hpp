@@ -15,6 +15,11 @@ class DeclarativePeripheral {
     friend class ExprParser;
 
   public:
+    struct Snapshot {
+        std::unordered_map<std::string, word_t> registers;
+        std::unordered_map<std::string, word_t> internal_vars;
+    };
+
     DeclarativePeripheral(CPU &cpu, const PeripheralDef &def);
 
     void reset();
@@ -38,6 +43,11 @@ class DeclarativePeripheral {
 
     word_t get_start_address() const { return def_.address_start; }
     word_t get_end_address() const { return def_.address_end; }
+    Snapshot capture_snapshot() const { return {registers_, internal_vars_}; }
+    void restore_snapshot(const Snapshot &snapshot) {
+        registers_ = snapshot.registers;
+        internal_vars_ = snapshot.internal_vars;
+    }
 
   private:
     CPU &cpu_;
@@ -45,8 +55,6 @@ class DeclarativePeripheral {
 
     std::unordered_map<std::string, word_t> registers_;
     std::unordered_map<std::string, word_t> internal_vars_;
-    std::unordered_map<word_t, PeripheralRegisterDef, WordHash> reg_map_;
-
     std::function<void(char)> host_print_;
     std::function<char()> host_pop_;
 

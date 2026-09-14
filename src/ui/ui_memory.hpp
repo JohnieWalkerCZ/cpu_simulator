@@ -17,7 +17,7 @@ inline void UI_MemoryView(CPU &cpu, GUIState &gui) {
     }
 
     for (word_t i = 0; i < display_limit; i += 8) {
-        ImGui::TextDisabled("%s: ", word_to_hex_string(i, 16).c_str());
+        ImGui::TextDisabled("%s: ", word_to_hex_string(i, cpu.get_config().addr_width).c_str());
         ImGui::SameLine();
 
         for (word_t j = 0; j < 8 && (i + j) < display_limit; j++) {
@@ -85,7 +85,7 @@ inline void UI_ProgramView(CPU &cpu, GUIState &gui) {
             }
         }
 
-        uint8_t opcode = decoder.peek_opcode(first_unit);
+        uint16_t opcode = decoder.peek_opcode(first_unit);
         int total_bits = decoder.get_total_bits(opcode);
         int units = (total_bits + unit_bits - 1) / unit_bits;
 
@@ -164,7 +164,8 @@ inline void UI_ProgramView(CPU &cpu, GUIState &gui) {
 
         bool is_current_pc = (curr_addr == pc);
 
-        ImGui::PushID((int)curr_addr);
+        const std::string address_id = FormatHexValue(curr_addr, config.addr_width);
+        ImGui::PushID(address_id.c_str());
         bool is_bp = gui.breakpoints.count(curr_addr);
         if (is_bp)
             ImGui::TextColored(ImVec4(1.0f, 0.2f, 0.2f, 1.0f), " (O) ");
@@ -185,14 +186,14 @@ inline void UI_ProgramView(CPU &cpu, GUIState &gui) {
         if (is_current_pc) {
             ImGui::PushStyleColor(ImGuiCol_Text,
                                   ImVec4(0.2f, 1.0f, 0.2f, 1.0f));
-            ImGui::Text("-> %04llX: %s", (unsigned long long)curr_addr,
+            ImGui::Text("-> %s: %s", FormatHexValue(curr_addr, config.addr_width).c_str(),
                        asm_line.c_str());
             ImGui::PopStyleColor();
 
             if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY())
                 ImGui::SetScrollHereY(0.5f);
         } else {
-            ImGui::Text("   %04llX: %s", (unsigned long long)curr_addr,
+            ImGui::Text("   %s: %s", FormatHexValue(curr_addr, config.addr_width).c_str(),
                        asm_line.c_str());
         }
 
@@ -227,7 +228,7 @@ inline void UI_FlashROMView(CPU &cpu, GUIState &gui) {
     }
 
     for (word_t i = 0; i < display_limit; i += 8) {
-        ImGui::TextDisabled("%s: ", word_to_hex_string(i, 16).c_str());
+        ImGui::TextDisabled("%s: ", word_to_hex_string(i, cpu.get_config().addr_width).c_str());
         ImGui::SameLine();
 
         for (word_t j = 0; j < 8 && (i + j) < display_limit; j++) {

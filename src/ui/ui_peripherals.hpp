@@ -15,7 +15,7 @@ inline void UI_Peripherals(CPU &cpu, const Config &config,
             if (def.type == "text_display") {
                 ImGui::TextDisabled(
                     "Mapped to %s",
-                    FormatHexValue(def.address_start, 16).c_str());
+                    FormatHexValue(def.address_start, config.addr_width).c_str());
                 ImGui::BeginChild((def.name + "_scroll").c_str(),
                                   ImVec2(0, 100), true);
                 ImGui::TextUnformatted(
@@ -28,8 +28,8 @@ inline void UI_Peripherals(CPU &cpu, const Config &config,
             else if (def.type == "grid_display") {
                 ImGui::TextDisabled(
                     "Mapped to %s - %s",
-                    FormatHexValue(def.address_start, 16).c_str(),
-                    FormatHexValue(def.address_end, 16).c_str());
+                    FormatHexValue(def.address_start, config.addr_width).c_str(),
+                    FormatHexValue(def.address_end, config.addr_width).c_str());
                 int width = def.parameters.count("width")
                                 ? std::stoi(def.parameters.at("width"))
                                 : 8;
@@ -60,7 +60,7 @@ inline void UI_Peripherals(CPU &cpu, const Config &config,
             else if (def.type == "input") {
                 ImGui::TextDisabled(
                     "Mapped to %s",
-                    FormatHexValue(def.address_start, 16).c_str());
+                    FormatHexValue(def.address_start, config.addr_width).c_str());
                 ImGui::Text("Press a key to send to CPU:");
                 if (ImGui::Button(" A "))
                     p_state.key_states[def.name] = 'A';
@@ -77,8 +77,8 @@ inline void UI_Peripherals(CPU &cpu, const Config &config,
             else if (def.type == "declarative") {
                 ImGui::TextDisabled(
                     "Mapped to %s - %s",
-                    FormatHexValue(def.address_start, 16).c_str(),
-                    FormatHexValue(def.address_end, 16).c_str());
+                    FormatHexValue(def.address_start, config.addr_width).c_str(),
+                    FormatHexValue(def.address_end, config.addr_width).c_str());
 
                 DeclarativePeripheral *active_dp = nullptr;
                 for (auto &dp : cpu.get_peripherals()) {

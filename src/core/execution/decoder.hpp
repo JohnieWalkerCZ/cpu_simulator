@@ -9,7 +9,7 @@
 
 struct DecodedInstruction {
     std::string name;
-    uint8_t opcode;
+    uint16_t opcode;
     bool is_valid = false;
     std::string error;
 
@@ -24,8 +24,8 @@ class Decoder {
   public:
     Decoder(const Config &config);
 
-    uint8_t peek_opcode(word_t first_word) const;
-    int get_total_bits(uint8_t opcode) const;
+    uint16_t peek_opcode(word_t first_word) const;
+    int get_total_bits(uint16_t opcode) const;
     DecodedInstruction decode(word_t instruction_bits, int fetched_bits) const;
 
     static int calculate_reg_bits(int reg_count) {
@@ -55,7 +55,7 @@ class Decoder {
         int total_bits;
     };
 
-    std::unordered_map<uint8_t, InstructionLayout> layout_map_;
+    std::unordered_map<uint16_t, InstructionLayout> layout_map_;
 
     void build_layout_map();
     word_t extract_bits(word_t val, int start_bit, int width,

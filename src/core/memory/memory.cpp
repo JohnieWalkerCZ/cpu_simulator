@@ -7,6 +7,7 @@
 Memory::Memory(const Config &config)
     : memory_size_(config.memory_size),
       word_size_bytes_((config.data_width + 7) / 8),
+      data_width_bits_(config.data_width),
       segments_(config.memory_segments),
       endianness_(config.endianness == "big" ? Endianness::Big
                                              : Endianness::Little),
@@ -69,11 +70,13 @@ void Memory::check_access(word_t address, bool req_r, bool req_w,
 }
 
 word_t Memory::read(word_t address, bool is_execute, int width_bits) const {
-    if (auto reg = find_io_region(address)) {
-        return reg->read_cb ? reg->read_cb(address) : 0;
+    if (!is_execute) {
+        if (auto reg = find_io_region(address)) {
+            return reg->read_cb ? reg->read_cb(address) : 0;
+        }
     }
 
-    int target_width = (width_bits > 0) ? width_bits : (word_size_bytes_ * 8);
+    int target_width = (width_bits > 0) ? width_bits : data_width_bits_;
     int target_bytes = (target_width + 7) / 8;
 
     for (int i = 0; i < target_bytes; ++i) {
@@ -93,7 +96,7 @@ word_t Memory::read(word_t address, bool is_execute, int width_bits) const {
                       read_page_byte(target_pages, address + i)))
                   << shift;
     }
-    return result;
+    return result & mask_for_width(target_width);
 }
 
 void Memory::write(word_t address, word_t value, int width_bits) {
@@ -103,7 +106,7 @@ void Memory::write(word_t address, word_t value, int width_bits) {
         return;
     }
 
-    int target_width = (width_bits > 0) ? width_bits : (word_size_bytes_ * 8);
+    int target_width = (width_bits > 0) ? width_bits : data_width_bits_;
     int target_bytes = (target_width + 7) / 8;
 
     for (int i = 0; i < target_bytes; ++i) {
@@ -166,12 +169,10 @@ void Memory::load_program(const std::vector<uint8_t> &machine_code,
 }
 
 bool Memory::is_valid_address(word_t address) const {
-    if (address >= memory_size_)
-        return false;
-    word_t end = address + static_cast<word_t>(word_size_bytes_) - 1;
-    if (end < address) // overflow past the 128-bit address space
-        return false;
-    return end < memory_size_;
+    // Callers already check per individual byte (read/write/read_bytes/
+    // write_bytes all loop one address at a time), so this only needs to
+    // validate a single byte, not a full architecture word.
+    return address < memory_size_;
 }
 
 void Memory::reset() {
@@ -187,7 +188,8 @@ void Memory::map_io_region(word_t start, word_t end, MMIO_ReadCallback r_cb,
 void Memory::reset_io_hooks() { io_regions_.clear(); }
 
 const MMIORegion *Memory::find_io_region(word_t address) const {
-    for (const MMIORegion &r : io_regions_) {
+    for (auto it = io_regions_.rbegin(); it != io_regions_.rend(); ++it) {
+        const MMIORegion &r = *it;
         if (address >= r.start && address <= r.end) {
             return &r;
         }

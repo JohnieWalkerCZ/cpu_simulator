@@ -4,7 +4,7 @@ Decoder::Decoder(const Config &config) : config_(config) {
     reg_field_width_ =
         calculate_reg_bits(static_cast<int>(config.registers.size()));
 
-    opcode_field_width_ = (config.data_width >= 8) ? 8 : config_.data_width;
+    opcode_field_width_ = config_.opcode_width;
 
     build_layout_map();
 }
@@ -64,15 +64,15 @@ void Decoder::build_layout_map() {
     }
 }
 
-uint8_t Decoder::peek_opcode(word_t first_word) const {
+uint16_t Decoder::peek_opcode(word_t first_word) const {
     int shift = config_.data_width - opcode_field_width_;
     if (shift < 0)
         shift = 0;
-    return static_cast<uint8_t>((first_word >> shift) &
-                                mask_for_width(opcode_field_width_));
+    return static_cast<uint16_t>((first_word >> shift) &
+                                 mask_for_width(opcode_field_width_));
 }
 
-int Decoder::get_total_bits(uint8_t opcode) const {
+int Decoder::get_total_bits(uint16_t opcode) const {
     if (layout_map_.find(opcode) != layout_map_.end()) {
         return layout_map_.at(opcode).total_bits;
     }
@@ -84,7 +84,7 @@ DecodedInstruction Decoder::decode(word_t instruction_bits,
     DecodedInstruction result;
     result.raw_bits = instruction_bits;
 
-    uint8_t opcode = static_cast<uint8_t>(
+    uint16_t opcode = static_cast<uint16_t>(
         extract_bits(instruction_bits, 0, opcode_field_width_, fetched_bits));
 
     if (layout_map_.find(opcode) == layout_map_.end()) {
@@ -98,9 +98,9 @@ DecodedInstruction Decoder::decode(word_t instruction_bits,
     result.opcode = opcode;
     result.is_valid = true;
 
-    result.length_bytes = layout.total_bits / config_.data_width;
-    if (result.length_bytes == 0)
-        result.length_bytes = 1;
+    const int units = (layout.total_bits + config_.data_width - 1) /
+                      config_.data_width;
+    result.length_bytes = units * ((config_.data_width + 7) / 8);
 
     int current_bit = 0;
     for (const auto &field : layout.fields) {
@@ -116,6 +116,8 @@ DecodedInstruction Decoder::decode(word_t instruction_bits,
             }
             result.regs[field.token] = static_cast<int>(val);
         } else if (!field.is_literal) {
+            if (field.token == "offset" && (val & static_cast<word_t>(0x80)))
+                val |= ~mask_for_width(field.bits);
             result.imms[field.token] = val;
         }
         current_bit += field.bits;

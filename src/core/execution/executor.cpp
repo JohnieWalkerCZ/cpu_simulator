@@ -6,14 +6,18 @@
 #include <stdexcept>
 #include <unordered_map>
 
-static std::unordered_map<uint8_t, std::vector<MicroOp>> microcode_map;
-
 Executor::Executor(Config &config, RegisterFile &regs, Memory &mem, ALU &alu)
     : config_(config), regs_(regs), mem_(mem), alu_(alu), decoder_(config) {
 
     pc_idx_ = regs_.find_by_role("program_counter");
+    if (pc_idx_ == -1)
+        pc_idx_ = regs_.find_by_role("pc");
     sp_idx_ = regs_.find_by_role("stack_pointer");
+    if (sp_idx_ == -1)
+        sp_idx_ = regs_.find_by_role("sp");
     flags_idx_ = regs_.find_by_role("status_flags");
+    if (flags_idx_ == -1)
+        flags_idx_ = regs_.find_by_role("flags");
 
     if (pc_idx_ == -1)
         throw std::runtime_error("Executor: PC register role not found.");
@@ -23,7 +27,7 @@ Executor::Executor(Config &config, RegisterFile &regs, Memory &mem, ALU &alu)
             throw std::runtime_error("Instruction " + inst.name +
                                      " has no microcode!");
         }
-        microcode_map[inst.opcode] = inst.microcode;
+        microcode_map_[inst.opcode] = inst.microcode;
     }
 
     reset();
@@ -67,7 +71,7 @@ void Executor::step_uop() {
         word_t first_unit = mem_.read(fetch_pc_, true);
         first_unit &= mask_for_width(unit_bits);
 
-        uint8_t opcode = decoder_.peek_opcode(first_unit);
+        uint16_t opcode = decoder_.peek_opcode(first_unit);
         int total_bits = decoder_.get_total_bits(opcode);
         units_fetched_ = (total_bits + unit_bits - 1) / unit_bits;
 
@@ -92,7 +96,7 @@ void Executor::step_uop() {
 
         word_t first_word =
             current_inst_.raw_bits >> (fetched_bits - config_.data_width);
-        uint8_t opcode = decoder_.peek_opcode(first_word);
+        uint16_t opcode = decoder_.peek_opcode(first_word);
 
         current_inst_ = decoder_.decode(current_inst_.raw_bits, fetched_bits);
 
@@ -115,7 +119,7 @@ void Executor::step_uop() {
     }
 
     case ExecutionState::EXECUTE_UOPS: {
-        const auto &uops = microcode_map.at(current_inst_.opcode);
+        const auto &uops = microcode_map_.at(current_inst_.opcode);
         current_execution_cycles_++;
 
         int target_latency = -1;
@@ -302,8 +306,12 @@ void Executor::perform_uop(const MicroOp &uop) {
 
         if (uop.args.count("update_flags") &&
             uop.args.at("update_flags") == "true") {
-            if (flags_idx_ != -1)
-                regs_.write(flags_idx_, res.flags_register);
+            if (flags_idx_ != -1) {
+                word_t old_flags = regs_.read(flags_idx_);
+                regs_.write(flags_idx_,
+                            (old_flags & ~res.flags_mask) |
+                                (res.flags_register & res.flags_mask));
+            }
         }
 
     } else if (uop.action == "mem_read") {
@@ -417,7 +425,7 @@ void Executor::perform_uop(const MicroOp &uop) {
 }
 
 void Executor::pre_resolve_diagnostics() {
-    const auto &uops = microcode_map.at(current_inst_.opcode);
+    const auto &uops = microcode_map_.at(current_inst_.opcode);
     if (uops.empty())
         return;
 
@@ -453,11 +461,9 @@ void Executor::pre_resolve_diagnostics() {
             uop.args.count("addr") ? resolve_operand(uop.args.at("addr")) : 0;
         last_addr_val_ = addr;
 
-        int width = uop.args.count("out")
-                        ? get_operand_width(uop.args.at("out"))
-                        : config_.data_width;
-        word_t val = mem_.read(addr, false, width);
-        last_data_val_ = val;
+        // Do not read here: a diagnostic lookahead must not trigger an MMIO
+        // register's on_read side effects before the micro-op executes.
+        last_data_val_ = 0;
 
     } else if (uop.action == "mem_write") {
         word_t addr =
@@ -508,7 +514,7 @@ word_t Executor::resolve_operand(const std::string &arg) {
     if (arg[0] == '#') {
         std::string val = arg.substr(1);
         if (val == "WORD_SIZE")
-            return config_.data_width / 8 > 0 ? config_.data_width / 8 : 1;
+            return (config_.data_width + 7) / 8;
         if (val == "ADDR_SIZE")
             return (config_.addr_width + 7) / 8;
         return parse_word(val);
@@ -530,10 +536,13 @@ void Executor::write_operand(const std::string &arg, word_t value) {
         if (reg == "PC") {
             regs_.set_pc(value);
             pc_modified_ = true;
-        } else if (reg == "SP")
-            regs_.write(sp_idx_, value);
-        else if (reg == "FLAGS")
-            regs_.write(flags_idx_, value);
+        } else if (reg == "SP") {
+            if (sp_idx_ != -1)
+                regs_.write(sp_idx_, value);
+        } else if (reg == "FLAGS") {
+            if (flags_idx_ != -1)
+                regs_.write(flags_idx_, value);
+        }
         else
             regs_.write(reg, value);
     }
@@ -582,7 +591,7 @@ int Executor::get_current_uop_latency() const {
         return 1;
     }
 
-    const auto &uops = microcode_map.at(current_inst_.opcode);
+    const auto &uops = microcode_map_.at(current_inst_.opcode);
 
     if (uop_index_ < uops.size()) {
         const auto &uop = uops[uop_index_];

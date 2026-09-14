@@ -180,6 +180,30 @@ int main() {
             assert(decoded_wide.imms.at("address") == address_val);
         }
 
+        // 8. Opcode width is architecture-configurable: a 12-bit opcode in
+        // a 16-bit fetch word identifies and decodes an instruction normally.
+        {
+            nlohmann::json opcode_j = nlohmann::json::parse(R"({
+                "name":"OpcodeWidth", "data_bus":{"width":16},
+                "address_bus":{"width":16}, "memory":{"size":256,"endianness":"big"},
+                "registers":{"special":[{"name":"PC","width":16,"role":"pc"}]},
+                "instruction_set":{"opcode_width":12,"instructions":[{
+                    "name":"WIDEOP", "opcode":2748, "encoding":[2748,"imm"],
+                    "microcode":[{"action":"halt"}]
+                }]}
+            })");
+            Config opcode_cfg = Config::from_json(opcode_j);
+            assert(opcode_cfg.validate());
+            Assembler opcode_assembler(opcode_cfg);
+            auto code = opcode_assembler.assemble("WIDEOP 0x5A");
+            word_t raw = 0;
+            for (uint8_t byte : code) raw = (raw << 8) | byte;
+            Decoder opcode_decoder(opcode_cfg);
+            auto decoded = opcode_decoder.decode(raw, 32);
+            assert(decoded.is_valid && decoded.opcode == 0xABC);
+            assert(decoded.imms.at("imm8") == 0x5A);
+        }
+
         std::cout << "Decoder unit tests passed successfully!\n";
         return 0;
     } catch (const std::exception &e) {

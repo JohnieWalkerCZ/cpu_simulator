@@ -1,13 +1,13 @@
 #include "declarative_peripheral.hpp"
 #include "../cpu.hpp"
 #include <cctype>
+#include <stdexcept>
 
 DeclarativePeripheral::DeclarativePeripheral(CPU &cpu, const PeripheralDef &def)
     : cpu_(cpu), def_(def) {
     internal_vars_ = def.internal_state;
     for (const auto &r : def.registers) {
         registers_[r.name] = r.initial;
-        reg_map_[static_cast<word_t>(r.offset)] = r;
     }
 }
 
@@ -35,8 +35,17 @@ class ExprParser {
     DeclarativePeripheral *periph;
     word_t ctx;
     void skip() {
-        while (p < s.size() && isspace(s[p]))
+        while (p < s.size() && std::isspace(static_cast<unsigned char>(s[p])))
             p++;
+    }
+    bool match_single(char c) {
+        skip();
+        if (p < s.size() && s[p] == c &&
+            (p + 1 == s.size() || s[p + 1] != c)) {
+            ++p;
+            return true;
+        }
+        return false;
     }
     bool match(const std::string &t) {
         skip();
@@ -50,7 +59,13 @@ class ExprParser {
   public:
     ExprParser(std::string str, DeclarativePeripheral *periph, word_t ctx)
         : s(str), periph(periph), ctx(ctx) {}
-    word_t parse() { return parse_logic(); }
+    word_t parse() {
+        word_t value = parse_logic();
+        skip();
+        if (p != s.size())
+            throw std::runtime_error("Invalid peripheral expression: " + s);
+        return value;
+    }
 
   private:
     word_t parse_logic() {
@@ -88,16 +103,18 @@ class ExprParser {
     word_t parse_bit() {
         word_t v = parse_term();
         while (true) {
-            if (match("&"))
+            if (match("<<")) {
+                word_t amount = parse_term();
+                v = amount >= 128 ? 0 : v << static_cast<unsigned>(amount);
+            } else if (match(">>")) {
+                word_t amount = parse_term();
+                v = amount >= 128 ? 0 : v >> static_cast<unsigned>(amount);
+            } else if (match_single('&'))
                 v &= parse_term();
-            else if (match("|"))
+            else if (match_single('|'))
                 v |= parse_term();
-            else if (match("^"))
+            else if (match_single('^'))
                 v ^= parse_term();
-            else if (match("<<"))
-                v <<= parse_term();
-            else if (match(">>"))
-                v >>= parse_term();
             else
                 break;
         }
@@ -123,6 +140,9 @@ class ExprParser {
             else if (match("/")) {
                 word_t d = parse_unary();
                 v = d ? v / d : 0;
+            } else if (match("%")) {
+                word_t d = parse_unary();
+                v = d ? v % d : 0;
             } else
                 break;
         }
@@ -141,11 +161,14 @@ class ExprParser {
     word_t parse_primary() {
         skip();
         if (match("(")) {
-            word_t v = parse();
-            match(")");
+            word_t v = parse_logic();
+            if (!match(")"))
+                throw std::runtime_error("Unclosed parenthesis in peripheral expression: " + s);
             return v;
         }
-        if (isdigit(s[p])) {
+        if (p >= s.size())
+            throw std::runtime_error("Unexpected end of peripheral expression: " + s);
+        if (std::isdigit(static_cast<unsigned char>(s[p]))) {
             size_t start = p;
             while (p < s.size() && (isalnum(s[p]) || s[p] == 'x'))
                 p++;
@@ -155,7 +178,7 @@ class ExprParser {
             }
             return parse_word(token);
         }
-        if (isalpha(s[p]) || s[p] == '_') {
+        if (std::isalpha(static_cast<unsigned char>(s[p])) || s[p] == '_') {
             size_t start = p;
             while (p < s.size() && (isalnum(s[p]) || s[p] == '_'))
                 p++;
@@ -163,8 +186,9 @@ class ExprParser {
             if (match("(")) {
                 word_t arg = 0;
                 if (!match(")")) {
-                    arg = parse();
-                    match(")");
+                    arg = parse_logic();
+                    if (!match(")"))
+                        throw std::runtime_error("Unclosed function call in peripheral expression: " + s);
                 }
                 if (id == "sys_read")
                     return periph->cpu_.get_memory().read(arg);
@@ -178,7 +202,7 @@ class ExprParser {
             }
             return periph->get_var(id, ctx);
         }
-        return 0;
+        throw std::runtime_error("Invalid peripheral expression: " + s);
     }
 };
 
@@ -238,26 +262,43 @@ void DeclarativePeripheral::tick() {
 }
 
 word_t DeclarativePeripheral::read(word_t offset) {
-    if (reg_map_.count(offset)) {
-        const auto &rdef = reg_map_[offset];
+    for (const auto &rdef : def_.registers) {
+        const word_t start = static_cast<word_t>(rdef.offset);
+        const word_t end = start + static_cast<word_t>(rdef.size_bytes);
+        if (offset >= start && offset < end) {
         if (rdef.access.find('r') != std::string::npos) {
-            word_t val = registers_[rdef.name];
+            word_t val = registers_[rdef.name] & mask_for_width(rdef.size_bytes * 8);
             if (!rdef.on_read.is_null())
                 execute_ast(rdef.on_read, val);
-            return registers_[rdef.name];
+            val = registers_[rdef.name] & mask_for_width(rdef.size_bytes * 8);
+            if (offset != start)
+                return (val >> ((offset - start) * 8)) & 0xFF;
+            return val;
         }
+        return 0;
+    }
     }
     return 0;
 }
 
 void DeclarativePeripheral::write(word_t offset, word_t value) {
-    if (reg_map_.count(offset)) {
-        const auto &rdef = reg_map_[offset];
+    for (const auto &rdef : def_.registers) {
+        const word_t start = static_cast<word_t>(rdef.offset);
+        const word_t end = start + static_cast<word_t>(rdef.size_bytes);
+        if (offset >= start && offset < end) {
         if (rdef.access.find('w') != std::string::npos) {
+            const word_t mask = mask_for_width(rdef.size_bytes * 8);
             if (!rdef.on_write.is_null())
-                execute_ast(rdef.on_write, value);
-            else
-                registers_[rdef.name] = value;
+                execute_ast(rdef.on_write, value & mask);
+            else if (offset == start)
+                registers_[rdef.name] = value & mask;
+            else {
+                const int shift = static_cast<int>((offset - start) * 8);
+                registers_[rdef.name] = (registers_[rdef.name] & ~(static_cast<word_t>(0xFF) << shift)) |
+                                        ((value & 0xFF) << shift);
+            }
         }
+        return;
+    }
     }
 }

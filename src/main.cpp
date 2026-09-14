@@ -17,7 +17,13 @@ int main(int argc, char **argv) {
         std::cout << "Usage: cpu_sim <config.json>\n";
         return 1;
     }
-    Config cfg = Config::from_file(argv[1]);
+    Config cfg;
+    try {
+        cfg = Config::from_file(argv[1]);
+    } catch (const std::exception &e) {
+        std::cerr << "Hardware Configuration Error: " << e.what() << "\n";
+        return 1;
+    }
     if (!cfg.validate()) {
         std::cerr << "Hardware Configuration Error: The specified architecture "
                      "layout is invalid.\n";
