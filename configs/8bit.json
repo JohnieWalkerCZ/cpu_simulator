@@ -123,7 +123,7 @@
         "microcode": [ { "action": "alu", "op": "SUB", "a": "@dest", "b": "@src", "out": "@dest", "update_flags": "true" } ]
       },
       {
-        "name": "SUB",
+        "name": "SUBI",
         "opcode": 14,
         "encoding": [14, "dest", "imm8"],
         "microcode": [ { "action": "alu", "op": "SUB", "a": "@dest", "b": "@imm8", "out": "@dest", "update_flags": "true" } ]

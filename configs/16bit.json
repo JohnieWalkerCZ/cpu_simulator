@@ -264,7 +264,7 @@
       "name": "SystemTimer",
       "type": "declarative",
       "address_start": "0xF100",
-      "address_end": "0xF100",
+      "address_end": "0xF101",
       "registers": [
         { "name": "TICKS", "offset": 0, "size_bytes": 2, "access": "r", "initial": 0 }
       ],

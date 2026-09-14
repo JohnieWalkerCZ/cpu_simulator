@@ -44,14 +44,19 @@ flowchart TD
     end
 
     %% --- CYCLE EXECUTION STEP ENGINE ---
-    subgraph Execution_Loop ["3. CPU HEARTBEAT ENGINE (cpu.cpp / main.cpp)"]
-        CPU_Step([CPU::step]) --> Step_Loop[CPU::step_uop loop]:::processStyle
+    subgraph Execution_Loop ["3. CPU HEARTBEAT ENGINE (cpu.cpp / ui_common.hpp)"]
+        Worker[["Background thread:\nRunCPUWorkerLoop(cpu, gui)"]]:::stateStyle
+        Worker -->|gui.is_running && interval elapsed| Lock[Acquire gui.cpu_mutex]:::processStyle
+        Lock --> CPU_Step([CPU::step]) --> Step_Loop[CPU::step_uop loop]:::processStyle
         Step_Loop --> Exec_Step[Executor::step_uop]:::processStyle
         Exec_Step --> Periph_Tick[DeclarativePeripheral::tick]:::peripheralStyle
         Periph_Tick --> Loop_Check{Executor State == FETCH\nOR CPU Halted?}:::decision
         Loop_Check -->|No| Step_Loop
-        Loop_Check -->|Yes| CPU_Step_Exit([Exit CPU::step])
+        Loop_Check -->|Yes| CPU_Step_Exit([Release mutex, sleep until next tick])
+        CPU_Step_Exit --> Worker
     end
+    UI_Thread[["UI thread (main.cpp): SDL/OpenGL render loop,\nlocks gui.cpu_mutex to read/mutate CPU for panels & controls"]]:::configStyle
+    UI_Thread -.->|shares CPU via gui.cpu_mutex| Lock
 
     %% --- MICROCODE PIPELINE ---
     subgraph Microcode_Pipeline ["4. PIPELINE STATE MACHINE (executor.cpp)"]

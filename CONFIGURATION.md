@@ -28,7 +28,7 @@ The root of each configuration file is a JSON object containing the primary arch
 ### 1.2. `data_bus`
 *   **Type:** `object`
 *   **Description:** Defines the primary data bus width for the architecture.
-    *   **`width`** (`integer`): The native data width in bits. Must be one of `4`, `8`, `16`, `32`, or `64`.
+    *   **`width`** (`integer`): The native data width in bits. Must be a multiple of `4` between `4` and `128` (no longer restricted to powers of two).
         *   *Impact:* This is a fundamental setting that influences many other parts of the CPU:
             *   The default width for ALU operations.
             *   The size of individual memory words fetched by default.
@@ -38,7 +38,7 @@ The root of each configuration file is a JSON object containing the primary arch
 ### 1.3. `address_bus`
 *   **Type:** `object`
 *   **Description:** Defines the width of the CPU's address bus.
-    *   **`width`** (`integer`): The address bus width in bits. Must be between `4` and `64`.
+    *   **`width`** (`integer`): The address bus width in bits. Must be a multiple of `4` between `4` and `128`.
         *   *Impact:* This determines the maximum amount of physical memory the CPU can address. For example, a 16-bit address bus allows for `2^16 = 65,536` unique addresses. It also dictates the size of fields specified as `"address"` in instruction encodings.
 
 ---
@@ -158,6 +158,7 @@ The `instruction_set` object defines the machine code and execution flow for the
 *   **Type:** `object`
 *   **Description:** Container for all instruction definitions.
     *   **`instructions`** (`array` of `Instruction` objects): Defines each individual instruction.
+    *   **`opcode_width`** (`integer`, optional): Number of leading opcode bits in every instruction. Defaults to 8 bits (or the data-bus width for buses below 8 bits). It must be between 1 and 16 and no wider than the data bus.
 
 ### 5.2. `Instruction`
 *   **Type:** `object`
@@ -182,7 +183,7 @@ The `instruction_set` object defines the machine code and execution flow for the
             *   `"address"`: An immediate value whose width is determined by the `address_bus.width`.
             *   `"offset"`: Typically an 8-bit signed offset.
             *   `"imm"`: A generic immediate value, defaulting to 8 bits.
-        *   *Impact:* The sequence and type of tokens determine the instruction's binary format and how operands are extracted by the decoder. The assembler uses this to match assembly mnemonics and operands to the correct binary encoding.
+        *   *Impact:* The sequence and type of tokens determine the instruction's binary format and how operands are extracted by the decoder. The assembler uses this to match assembly mnemonics and operands to the correct binary encoding. The leading opcode uses `instruction_set.opcode_width`; later literal fields are fixed at 4 bits, and a packed instruction cannot exceed 128 bits; an `address` field must leave room for its opcode.
     *   **`microcode`** (`array` of `MicroOp` objects): A sequence of low-level operations that constitute the execution of this instruction. The executor processes these operations one by one.
         *   *See `MicroOp` below.*
 
@@ -236,8 +237,8 @@ The `peripherals` array allows defining custom hardware components that interact
         *   `"input"`: Renders a host key-press input widget in the UI.
         *   `"declarative"`: A highly flexible peripheral whose behavior is defined by AST logic.
         *   **Note:** Only `"text_display"` and `"declarative"` are currently wired into the memory-mapped I/O bus (via `Memory::map_io_region`), so a running program can actually read/write them at `address_start`-`address_end`. `"grid_display"` and `"input"` currently exist only as UI widgets in the I/O Peripherals panel (backed by local UI state) and are not yet connected to CPU memory reads/writes.
-    *   **`address_start`** (`string` or `integer`): The starting MMIO address for this peripheral. Supports full **64-bit address limits**.
-    *   **`address_end`** (`string` or `integer`): The ending MMIO address for this peripheral. Supports full **64-bit address limits**.
+    *   **`address_start`** (`string` or `integer`): The starting MMIO address for this peripheral. Supports the configured address width.
+    *   **`address_end`** (`string` or `integer`): The ending MMIO address for this peripheral. Supports the configured address width.
     *   **`parameters`** (`object`, optional): A key-value map of configuration parameters for certain peripheral types (e.g., `"width"` for a `"grid_display"`).
     *   **`registers`** (`array` of `PeripheralRegisterDef` objects, optional): Defines memory-mapped registers within the peripheral.
     *   **`internal_state`** (`object` of key-value pairs, optional): Defines internal hardware state variables for `"declarative"` peripherals.

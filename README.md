@@ -9,7 +9,7 @@ The simulator includes a dynamic multi-pass assembler, a microcoded instruction 
 ## Key Features
 
 ### 1. Parametric Architecture Widths
-* Configure native data and address buses to any power-of-two width between 4-bit and 64-bit.
+* Configure native data and address buses to any multiple of 4 bits between 4-bit and 128-bit.
 * Evaluates instruction fetches, register boundaries, sign-extension, and wrap-around arithmetic dynamically according to the configured system parameters.
 * Scaled byte-level memory addressing ensures multi-byte system instruction widths and PC increments align accurately without memory gaps or bit truncation.
 

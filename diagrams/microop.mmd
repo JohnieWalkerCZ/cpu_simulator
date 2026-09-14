@@ -6,6 +6,11 @@ flowchart TD
 
     UopEntry([Micro-Op Evaluation]) --> ActionSwitch{uop.action}
 
+    %% Copy
+    ActionSwitch -->|copy| Copy_Action[copy]:::execute
+    Copy_Action --> Copy_1[Resolve source operand]:::lookup
+    Copy_1 --> Copy_Write[Write value to dest operand]:::store
+
     %% ALU
     ActionSwitch -->|alu| ALU_Action[alu]:::execute
     ALU_Action --> ALU_1[Resolve inputs: a, b, c]:::lookup
@@ -35,3 +40,25 @@ flowchart TD
     %% Peripheral Mappings
     MW_Write -->|MMIO Range Match| MMIO_Hook[Trigger Declarative Peripheral MMIO on_write AST]:::execute
     MR_2 -->|MMIO Range Match| MMIO_Hook_R[Trigger Declarative Peripheral MMIO on_read AST]:::execute
+
+    %% Port I/O (separate address space from MMIO, bypasses segment checks)
+    ActionSwitch -->|port_read| PRead[port_read]:::execute
+    PRead --> PR_1[Resolve port operand]:::lookup
+    PR_1 --> PR_Write[Memory::port_read -> write value to dest]:::store
+
+    ActionSwitch -->|port_write| PWrite[port_write]:::execute
+    PWrite --> PW_1[Resolve port and data operands]:::lookup
+    PW_1 --> PW_Write[Memory::port_write]:::store
+
+    %% Coprocessor register access
+    ActionSwitch -->|coproc_read| CRead[coproc_read]:::execute
+    CRead --> CR_1[Resolve cp id and reg id]:::lookup
+    CR_1 --> CR_Write[RegisterFile::read_coproc -> write to dest]:::store
+
+    ActionSwitch -->|coproc_write| CWrite[coproc_write]:::execute
+    CWrite --> CW_1[Resolve cp id, reg id and data]:::lookup
+    CW_1 --> CW_Write[RegisterFile::write_coproc]:::store
+
+    %% Halt
+    ActionSwitch -->|halt| Halt_Action[halt]:::execute
+    Halt_Action --> Halt_Set[Set halted_ = true, CPU stops stepping]:::store
