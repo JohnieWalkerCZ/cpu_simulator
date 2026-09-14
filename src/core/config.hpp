@@ -55,7 +55,7 @@ enum class LatencyMode {
 
 struct Instruction {
     std::string name;
-    uint8_t opcode;
+    uint16_t opcode;
     std::vector<int> encoding;
     std::vector<MicroOp> microcode;
     int execution_latency = -1;
@@ -102,6 +102,7 @@ struct Config {
     std::string name;
     int data_width;
     int addr_width;
+    int opcode_width = 8;
     word_t memory_size;
     std::string endianness = "little";
     std::string memory_architecture = "von_neumann";

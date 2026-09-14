@@ -23,7 +23,7 @@ std::vector<ALU::Token> ALU::tokenize(const std::string &expr) {
     std::vector<Token> tokens;
     for (size_t i = 0; i < expr.length(); ++i) {
         char ch = expr[i];
-        if (isspace(ch) || ch == '(' || ch == ')') {
+        if (std::isspace(static_cast<unsigned char>(ch)) || ch == '(' || ch == ')') {
             if (ch == '(')
                 tokens.push_back({TokenType::L_PAREN});
             if (ch == ')')
@@ -31,10 +31,11 @@ std::vector<ALU::Token> ALU::tokenize(const std::string &expr) {
             continue;
         }
 
-        if (isdigit(ch)) {
+        if (std::isdigit(static_cast<unsigned char>(ch))) {
             std::string s;
             while (i < expr.length() &&
-                   (isxdigit(expr[i]) || expr[i] == 'x' || expr[i] == 'X'))
+                   (std::isxdigit(static_cast<unsigned char>(expr[i])) ||
+                    expr[i] == 'x' || expr[i] == 'X'))
                 s += expr[i++];
             i--;
             tokens.push_back({TokenType::LITERAL, parse_word(s)});
@@ -65,13 +66,14 @@ std::vector<ALU::Token> ALU::tokenize(const std::string &expr) {
                 tokens.push_back({TokenType::OP_NOT});
             else if (ch == '!')
                 tokens.push_back({TokenType::OP_LNOT});
-            else if (ch == '<' && expr[i + 1] == '<') {
+            else if (ch == '<' && i + 1 < expr.size() && expr[i + 1] == '<') {
                 tokens.push_back({TokenType::OP_SHL});
                 i++;
-            } else if (ch == '>' && expr[i + 1] == '>') {
+            } else if (ch == '>' && i + 1 < expr.size() && expr[i + 1] == '>') {
                 tokens.push_back({TokenType::OP_SHR});
                 i++;
-            }
+            } else
+                throw std::runtime_error("Invalid ALU expression character");
         }
     }
     return tokens;
@@ -117,10 +119,35 @@ std::vector<ALU::Token> ALU::shunting_yard(const std::vector<Token> &tokens) {
         }
     }
     while (!ops.empty()) {
+        if (ops.top().type == TokenType::L_PAREN)
+            throw std::runtime_error("Unclosed parenthesis in ALU expression");
         output.push_back(ops.top());
         ops.pop();
     }
     return output;
+}
+
+bool ALU::is_valid_expression(const std::string &expression) {
+    try {
+        auto rpn = shunting_yard(tokenize(expression));
+        int values = 0;
+        for (const auto &token : rpn) {
+            if (token.type <= TokenType::LITERAL)
+                ++values;
+            else if (token.type == TokenType::OP_NOT ||
+                     token.type == TokenType::OP_LNOT) {
+                if (values < 1)
+                    return false;
+            } else {
+                if (values < 2)
+                    return false;
+                --values;
+            }
+        }
+        return values == 1;
+    } catch (...) {
+        return false;
+    }
 }
 
 word_t ALU::evaluate_rpn(const std::vector<Token> &rpn, word_t a, word_t b,
@@ -136,14 +163,20 @@ word_t ALU::evaluate_rpn(const std::vector<Token> &rpn, word_t a, word_t b,
         else if (t.type == TokenType::LITERAL)
             s.push(t.value);
         else if (t.type == TokenType::OP_NOT) {
+            if (s.empty())
+                throw std::runtime_error("Malformed ALU expression");
             word_t v = s.top();
             s.pop();
             s.push(~v);
         } else if (t.type == TokenType::OP_LNOT) {
+            if (s.empty())
+                throw std::runtime_error("Malformed ALU expression");
             word_t v = s.top();
             s.pop();
             s.push(!v ? 1 : 0);
         } else {
+            if (s.size() < 2)
+                throw std::runtime_error("Malformed ALU expression");
             word_t right = s.top();
             s.pop();
             word_t left = s.top();
@@ -171,16 +204,18 @@ word_t ALU::evaluate_rpn(const std::vector<Token> &rpn, word_t a, word_t b,
                 s.push(left ^ right);
                 break;
             case TokenType::OP_SHL:
-                s.push(left << right);
+                s.push(right >= 128 ? 0 : left << static_cast<unsigned>(right));
                 break;
             case TokenType::OP_SHR:
-                s.push(left >> right);
+                s.push(right >= 128 ? 0 : left >> static_cast<unsigned>(right));
                 break;
             default:
                 break;
             }
         }
     }
+    if (s.size() != 1)
+        throw std::runtime_error("Malformed ALU expression");
     return s.top();
 }
 
@@ -199,6 +234,8 @@ ALU::FullResult ALU::execute(const std::string &op_name, word_t a, word_t b,
     word_t op_mask = mask_;
     word_t op_sign_bit = sign_bit_;
     if (width > 0) {
+        if (width > 128)
+            throw std::runtime_error("Invalid ALU operand width");
         op_mask = mask_for_width(width);
         op_sign_bit = static_cast<word_t>(1) << (width - 1);
     }
@@ -210,6 +247,7 @@ ALU::FullResult ALU::execute(const std::string &op_name, word_t a, word_t b,
     word_t masked_b = b & op_mask;
 
     word_t flags_out = 0;
+    word_t flags_mask = 0;
 
     for (const auto &[flag_name, logic_type] : op_def->flag_rules) {
         int bit_pos = -1;
@@ -223,6 +261,7 @@ ALU::FullResult ALU::execute(const std::string &op_name, word_t a, word_t b,
         }
         if (bit_pos == -1)
             continue;
+        flags_mask |= static_cast<word_t>(1) << bit_pos;
 
         bool flag_val = false;
         if (!expr.empty()) {
@@ -243,6 +282,9 @@ ALU::FullResult ALU::execute(const std::string &op_name, word_t a, word_t b,
             } else if (logic_type == "overflow_sub") {
                 flag_val = ((masked_a ^ masked_b) & (masked_a ^ final_res) &
                             op_sign_bit) != 0;
+            } else if (!logic_type.empty()) {
+                flag_val = (evaluate_flag_expression(logic_type, a, b, c,
+                                                     final_res, op_mask) != 0);
             }
         }
 
@@ -250,7 +292,7 @@ ALU::FullResult ALU::execute(const std::string &op_name, word_t a, word_t b,
             flags_out |= (static_cast<word_t>(1) << bit_pos);
     }
 
-    return {final_res, flags_out};
+    return {final_res, flags_out, flags_mask};
 }
 
 word_t ALU::evaluate_flag_expression(const std::string &expr, word_t a,

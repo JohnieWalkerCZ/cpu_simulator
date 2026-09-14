@@ -129,6 +129,45 @@ int main() {
             assert(!too_wide_cfg.validate());
         }
 
+        // Numeric addresses are documented input forms, and malformed runtime
+        // expressions/references must now be rejected by validation.
+        {
+            Config numeric_addresses = Config::from_json(nlohmann::json::parse(R"({
+                "name":"NumericAddresses", "data_bus":{"width":8},
+                "address_bus":{"width":8}, "memory":{"size":256,
+                "segments":[{"name":"ALL","start":0,"end":255}]},
+                "registers":{"special":[{"name":"PC","width":8,"role":"pc"}]},
+                "peripherals":[{"name":"TTY","type":"text_display","address":128}]
+            })"));
+            assert(numeric_addresses.validate());
+
+            Config bad_expression = numeric_addresses;
+            bad_expression.alu_ops.push_back({"BAD", 1, "a +", {}, 1});
+            assert(!bad_expression.validate());
+
+            Config oversized_mmio_register = numeric_addresses;
+            oversized_mmio_register.peripherals[0].type = "declarative";
+            oversized_mmio_register.peripherals[0].registers.push_back(
+                {"TOO_WIDE", 0, 17, "rw", 0, {}, {}});
+            assert(!oversized_mmio_register.validate());
+        }
+
+        {
+            Config opcode_width_cfg = Config::from_json(nlohmann::json::parse(R"({
+                "name":"OpcodeWidth", "data_bus":{"width":16},
+                "address_bus":{"width":16}, "memory":{"size":256},
+                "registers":{"special":[{"name":"PC","width":16,"role":"pc"}]},
+                "instruction_set":{"opcode_width":12,"instructions":[{
+                    "name":"HALT","opcode":2748,"encoding":[2748],
+                    "microcode":[{"action":"halt"}]
+                }]}
+            })"));
+            assert(opcode_width_cfg.opcode_width == 12);
+            assert(opcode_width_cfg.validate());
+            opcode_width_cfg.opcode_width = 17;
+            assert(!opcode_width_cfg.validate());
+        }
+
         std::cout << "Config parser unit tests passed successfully!\n";
         return 0;
     } catch (const std::exception &e) {

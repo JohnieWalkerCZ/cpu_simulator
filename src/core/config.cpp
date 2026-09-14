@@ -1,4 +1,7 @@
 #include "config.hpp"
+#include "alu/alu.hpp"
+#include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
@@ -13,6 +16,26 @@ static word_t json_to_word(const nlohmann::json &val) {
     if (val.is_string())
         return parse_word(val.get<std::string>());
     return static_cast<word_t>(val.get<uint64_t>());
+}
+
+static bool valid_flag_expression(const std::string &expression) {
+    std::string normalized;
+    for (size_t i = 0; i < expression.size();) {
+        if (std::isalpha(static_cast<unsigned char>(expression[i])) || expression[i] == '_') {
+            size_t end = i + 1;
+            while (end < expression.size() &&
+                   (std::isalnum(static_cast<unsigned char>(expression[end])) || expression[end] == '_'))
+                ++end;
+            const std::string name = expression.substr(i, end - i);
+            if (name != "a" && name != "b" && name != "c" && name != "res" && name != "max_val")
+                return false;
+            normalized += '1';
+            i = end;
+        } else {
+            normalized += expression[i++];
+        }
+    }
+    return ALU::is_valid_expression(normalized);
 }
 
 static void parse_mask_pattern(const nlohmann::json &val, word_t &pattern,
@@ -49,6 +72,8 @@ static void parse_register_recursive(const nlohmann::json &j_reg, Config &cfg,
     RegisterDef reg;
     reg.name = j_reg.at("name").get<std::string>();
     reg.width = j_reg.at("width").get<int>();
+    if (reg.width < 1 || reg.width > 128)
+        throw std::runtime_error("Register '" + reg.name + "' has invalid width");
     reg.is_coproc = j_reg.value("coproc", false);
     reg.coproc_id = j_reg.value("coproc_id", -1);
     reg.coproc_reg_id = j_reg.value("coproc_reg_id", -1);
@@ -101,6 +126,8 @@ static void parse_register_recursive(const nlohmann::json &j_reg, Config &cfg,
             }
         } else {
             int offset = j_reg.value("offset", 0);
+            if (offset < 0)
+                throw std::runtime_error("Register '" + reg.name + "' has a negative offset");
             reg.bit_mapping.resize(reg.width);
             for (int i = 0; i < reg.width; ++i) {
                 int parent_idx = offset + i;
@@ -131,6 +158,8 @@ Config Config::from_json(const nlohmann::json &j) {
     cfg.name = j.at("name").get<std::string>();
     cfg.data_width = j["data_bus"].at("width").get<int>();
     cfg.addr_width = j["address_bus"].at("width").get<int>();
+    cfg.opcode_width = j.value("instruction_set", nlohmann::json::object())
+                           .value("opcode_width", cfg.data_width >= 8 ? 8 : cfg.data_width);
     cfg.memory_size = json_to_word(j["memory"].at("size"));
     cfg.endianness = j["memory"].value("endianness", "little");
     cfg.memory_architecture = j["memory"].value("architecture", "von_neumann");
@@ -139,8 +168,8 @@ Config Config::from_json(const nlohmann::json &j) {
         for (const auto &seg : j["memory"]["segments"]) {
             MemorySegmentDef def;
             def.name = seg.at("name").get<std::string>();
-            def.start = parse_word(seg.at("start").get<std::string>());
-            def.end = parse_word(seg.at("end").get<std::string>());
+            def.start = json_to_word(seg.at("start"));
+            def.end = json_to_word(seg.at("end"));
             def.r = seg.value("R", true);
             def.w = seg.value("W", true);
             def.x = seg.value("X", true);
@@ -206,7 +235,7 @@ Config Config::from_json(const nlohmann::json &j) {
         for (const auto &inst : j["instruction_set"]["instructions"]) {
             Instruction ins;
             ins.name = inst.at("name").get<std::string>();
-            ins.opcode = inst.at("opcode").get<uint8_t>();
+            ins.opcode = inst.at("opcode").get<uint16_t>();
             ins.execution_latency = inst.value("latency", -1);
 
             std::string mode_str = inst.value("latency_mode", "dynamic");
@@ -244,6 +273,8 @@ Config Config::from_json(const nlohmann::json &j) {
                             ins.encoding.push_back(-6);
                         else if (token == "address")
                             ins.encoding.push_back(-7);
+                        else if (token == "imm")
+                            ins.encoding.push_back(-5);
                         else
                             ins.encoding.push_back(-10);
                     }
@@ -284,21 +315,21 @@ Config Config::from_json(const nlohmann::json &j) {
             def.type = p.at("type").get<std::string>();
 
             if (p.contains("address")) {
-                def.address_start =
-                    parse_word(p.at("address").get<std::string>());
+                def.address_start = json_to_word(p.at("address"));
                 def.address_end = def.address_start;
             } else {
-                def.address_start =
-                    parse_word(p.at("address_start").get<std::string>());
-                def.address_end =
-                    parse_word(p.at("address_end").get<std::string>());
+                def.address_start = json_to_word(p.at("address_start"));
+                def.address_end = json_to_word(p.at("address_end"));
             }
 
             if (p.contains("parameters")) {
                 for (auto &[key, val] : p["parameters"].items()) {
-                    def.parameters[key] = val.is_string()
-                                              ? val.get<std::string>()
-                                              : std::to_string(val.get<int>());
+                    if (val.is_string())
+                        def.parameters[key] = val.get<std::string>();
+                    else if (val.is_number_integer() || val.is_number_unsigned())
+                        def.parameters[key] = word_to_dec_string(json_to_word(val));
+                    else
+                        throw std::runtime_error("Peripheral parameter must be a string or integer");
                 }
             }
 
@@ -352,11 +383,24 @@ Config Config::from_file(const std::string &path) {
 
 bool Config::validate() const {
     std::unordered_set<std::string> names;
-    std::unordered_set<uint8_t> opcodes;
+    std::unordered_set<uint16_t> opcodes;
     std::unordered_set<uint8_t> alu_codes;
 
-    // Widths no longer need to be a power of two -- any multiple of 4 bits
-    // between 4 and 128 is a valid bus/register width.
+    auto role_count = [&](const std::string &a, const std::string &b) {
+        int count = 0;
+        for (const auto &reg : registers)
+            count += reg.role == a || reg.role == b;
+        return count;
+    };
+    auto has_arg = [](const MicroOp &uop, const char *name) {
+        return uop.args.contains(name) && !uop.args.at(name).empty();
+    };
+    auto is_known_register = [&](const std::string &name) {
+        return std::any_of(registers.begin(), registers.end(), [&](const RegisterDef &reg) {
+            return reg.name == name;
+        });
+    };
+
     if (data_width < 4 || data_width > 128 || (data_width % 4) != 0) {
         return false;
     }
@@ -364,13 +408,19 @@ bool Config::validate() const {
     if (addr_width < 4 || addr_width > 128 || (addr_width % 4) != 0) {
         return false;
     }
+    if (opcode_width < 1 || opcode_width > 16 || opcode_width > data_width)
+        return false;
 
     word_t max_adressable = (addr_width >= 128)
                                 ? ~static_cast<word_t>(0)
                                 : (static_cast<word_t>(1) << addr_width);
-    if (memory_size > max_adressable) {
+    if (memory_size == 0 || memory_size > max_adressable) {
         return false;
     }
+    if (endianness != "little" && endianness != "big")
+        return false;
+    if (memory_architecture != "von_neumann" && memory_architecture != "harvard")
+        return false;
 
     for (const RegisterDef &reg : registers) {
         if (names.count(reg.name))
@@ -392,26 +442,193 @@ bool Config::validate() const {
                 reg.role != "status_flags")
                 return false;
         }
-    }
-
-    bool has_pc = false;
-    for (const RegisterDef &reg : registers) {
-        if (reg.role == "pc" || reg.role == "program_counter") {
-            has_pc = true;
-            break;
+        if (reg.physical_index < 0)
+            return false;
+        for (int bit : reg.bit_mapping) {
+            if (bit < 0 || bit >= 128)
+                return false;
         }
     }
-    if (!has_pc)
+
+    if (role_count("pc", "program_counter") != 1 ||
+        role_count("sp", "stack_pointer") > 1 ||
+        role_count("flags", "status_flags") > 1)
         return false;
 
+    int flags_width = 0;
+    for (const auto &reg : registers)
+        if (reg.role == "flags" || reg.role == "status_flags")
+            flags_width = reg.width;
+    std::unordered_set<std::string> flag_names;
+    std::unordered_set<int> flag_bits;
+    for (const auto &flag : alu_flags) {
+        if (flag.bit < 0 || flag.bit >= flags_width || !flag_names.insert(flag.name).second ||
+            !flag_bits.insert(flag.bit).second ||
+            (!flag.expression.empty() && !valid_flag_expression(flag.expression)))
+            return false;
+    }
+
+    std::unordered_set<std::string> alu_names;
     for (const ALUOp &op : alu_ops) {
-        if (alu_codes.count(op.code))
+        if (alu_codes.count(op.code) || !alu_names.insert(op.name).second || op.name.empty())
             return false;
         alu_codes.insert(op.code);
 
-        if (op.latency < 1)
+        if (op.latency < 1 || !ALU::is_valid_expression(op.expression))
             return false;
     }
 
+    int reg_bits = registers.size() <= 1 ? 1 : 0;
+    while ((static_cast<size_t>(1) << reg_bits) < registers.size())
+        ++reg_bits;
+    const int opcode_bits = opcode_width;
+    std::unordered_set<std::string> instruction_names;
+    for (const auto &inst : instructions) {
+        if (!instruction_names.insert(inst.name).second || opcodes.count(inst.opcode) ||
+            inst.encoding.empty() || inst.microcode.empty() ||
+            inst.opcode > mask_for_width(opcode_bits))
+            return false;
+        opcodes.insert(inst.opcode);
+        if (inst.encoding.front() != inst.opcode)
+            return false;
+        int total_bits = 0;
+        for (size_t i = 0; i < inst.encoding.size(); ++i) {
+            const int field = inst.encoding[i];
+            if (field >= 0) {
+                if (field > static_cast<int>(mask_for_width(i == 0 ? opcode_bits : 4)))
+                    return false;
+                total_bits += i == 0 ? opcode_bits : 4;
+            } else if (field >= -3) {
+                total_bits += reg_bits;
+            } else if (field == -4 || field == -5 || field == -10) {
+                if (field == -10)
+                    return false;
+                total_bits += 8;
+            } else if (field == -6) {
+                total_bits += 16;
+            } else if (field == -7) {
+                total_bits += addr_width;
+            } else {
+                return false;
+            }
+        }
+        const int fetched_bits = ((total_bits + data_width - 1) / data_width) * data_width;
+        if (fetched_bits > 128)
+            return false;
+        std::unordered_set<std::string> decoded_operands;
+        for (int field : inst.encoding) {
+            if (field == -1) decoded_operands.insert("dest");
+            else if (field == -2) decoded_operands.insert("src");
+            else if (field == -3) decoded_operands.insert("addr_reg");
+            else if (field == -4) decoded_operands.insert("offset");
+            else if (field == -5) decoded_operands.insert("imm8");
+            else if (field == -6) decoded_operands.insert("imm16");
+            else if (field == -7) decoded_operands.insert("address");
+        }
+        auto valid_operand = [&](const std::string &arg, bool writable) {
+            if (arg.empty()) return false;
+            if (arg[0] == '@') {
+                const std::string token = arg.substr(1);
+                if (!decoded_operands.contains(token)) return false;
+                return !writable || token == "dest" || token == "src" || token == "addr_reg";
+            }
+            if (arg[0] == '$') {
+                const std::string name = arg.substr(1);
+                return name == "PC" || name == "SP" || name == "FLAGS" ||
+                       (!writable && name == "NEXT_PC") || is_known_register(name);
+            }
+            if (writable) return false;
+            if (arg[0] != '#') return false;
+            const std::string value = arg.substr(1);
+            if (value == "WORD_SIZE" || value == "ADDR_SIZE") return true;
+            try { parse_word(value); return true; } catch (...) { return false; }
+        };
+        for (const auto &uop : inst.microcode) {
+            if (uop.action == "copy") {
+                if (!has_arg(uop, "source") || !has_arg(uop, "dest")) return false;
+            } else if (uop.action == "alu") {
+                if (!has_arg(uop, "op") || !has_arg(uop, "a") || !has_arg(uop, "out") ||
+                    !alu_names.contains(uop.args.at("op"))) return false;
+            } else if (uop.action == "mem_read") {
+                if (!has_arg(uop, "addr") || !has_arg(uop, "out")) return false;
+            } else if (uop.action == "mem_write") {
+                if (!has_arg(uop, "addr") || !has_arg(uop, "data")) return false;
+            } else if (uop.action == "port_read") {
+                if (!has_arg(uop, "port") || !has_arg(uop, "out")) return false;
+            } else if (uop.action == "port_write") {
+                if (!has_arg(uop, "port") || !has_arg(uop, "data")) return false;
+            } else if (uop.action == "coproc_read") {
+                if (!has_arg(uop, "cp") || !has_arg(uop, "reg") || !has_arg(uop, "out")) return false;
+            } else if (uop.action == "coproc_write") {
+                if (!has_arg(uop, "cp") || !has_arg(uop, "reg") || !has_arg(uop, "data")) return false;
+            } else if (uop.action == "branch") {
+                if (!has_arg(uop, "target")) return false;
+            } else if (uop.action != "halt") {
+                return false;
+            }
+            for (const auto &[key, value] : uop.args) {
+                const bool writable = key == "dest" || key == "out";
+                if ((key == "source" || key == "dest" || key == "out" || key == "a" ||
+                     key == "b" || key == "c" || key == "addr" || key == "data" ||
+                     key == "port" || key == "cp" || key == "reg" || key == "target") &&
+                    !valid_operand(value, writable)) return false;
+            }
+            if (uop.action == "branch" && uop.args.contains("condition")) {
+                std::string condition = uop.args.at("condition");
+                if (!condition.empty() && condition[0] == '!') condition.erase(0, 1);
+                if (condition.empty() || std::none_of(alu_flags.begin(), alu_flags.end(),
+                    [&](const FlagDef &flag) { return flag.name == condition || flag.type == condition; }))
+                    return false;
+            }
+        }
+    }
+
+    for (size_t i = 0; i < memory_segments.size(); ++i) {
+        const auto &segment = memory_segments[i];
+        if (segment.start > segment.end || segment.end >= memory_size)
+            return false;
+        for (size_t k = 0; k < i; ++k)
+            if (!(segment.end < memory_segments[k].start || segment.start > memory_segments[k].end))
+                return false;
+    }
+    std::unordered_set<std::string> peripheral_names;
+    for (const auto &peripheral : peripherals) {
+        if (peripheral.name.empty() || !peripheral_names.insert(peripheral.name).second ||
+            peripheral.address_start > peripheral.address_end || peripheral.address_end >= memory_size ||
+            (peripheral.type != "text_display" && peripheral.type != "grid_display" &&
+             peripheral.type != "input" && peripheral.type != "declarative"))
+            return false;
+        if (peripheral.type == "grid_display" && peripheral.parameters.contains("width")) {
+            try {
+                if (std::stoi(peripheral.parameters.at("width")) <= 0) return false;
+            } catch (...) { return false; }
+        }
+        std::unordered_set<std::string> peripheral_reg_names;
+        for (const auto &reg : peripheral.registers) {
+            if (reg.offset < 0 || reg.size_bytes < 1 || reg.size_bytes > 16 ||
+                !peripheral_reg_names.insert(reg.name).second ||
+                static_cast<word_t>(reg.offset) + static_cast<word_t>(reg.size_bytes) - 1 >
+                    peripheral.address_end - peripheral.address_start ||
+                (reg.access != "r" && reg.access != "w" && reg.access != "rw"))
+                return false;
+        }
+    }
+
+    for (size_t i = 0; i < peripherals.size(); ++i) {
+        for (size_t j = 0; j < i; ++j) {
+            const auto &a = peripherals[i];
+            const auto &b = peripherals[j];
+            if (a.address_end < b.address_start || a.address_start > b.address_end)
+                continue;
+            const bool layered_terminal = (a.type == "text_display" && b.type == "declarative") ||
+                                          (a.type == "declarative" && b.type == "text_display");
+            if (!layered_terminal) return false;
+        }
+    }
+
     return true;
+}
+
+std::string Config::get_error() const {
+    return validate() ? "" : "Invalid CPU configuration";
 }

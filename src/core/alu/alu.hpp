@@ -12,11 +12,13 @@ class ALU {
     struct FullResult {
         word_t value;
         word_t flags_register;
+        word_t flags_mask;
     };
 
     ALU(const Config &config);
     FullResult execute(const std::string &op_name, word_t a, word_t b = 0,
                        word_t c = 0, int width = 0);
+    static bool is_valid_expression(const std::string &expression);
 
   private:
     const Config &config_;
@@ -51,8 +53,8 @@ class ALU {
     std::unordered_map<std::string, std::vector<Token>> compiled_ops_;
 
     void compile_expressions();
-    std::vector<Token> tokenize(const std::string &expr);
-    std::vector<Token> shunting_yard(const std::vector<Token> &tokens);
+    static std::vector<Token> tokenize(const std::string &expr);
+    static std::vector<Token> shunting_yard(const std::vector<Token> &tokens);
     word_t evaluate_rpn(const std::vector<Token> &rpn, word_t a, word_t b,
                         word_t c);
 
