@@ -71,6 +71,11 @@ add_executable(cpu_sim
 )
 target_link_libraries(cpu_sim cpu_core imgui SDL2::SDL2 ${OPENGL_LIBRARIES} ${CMAKE_DL_LIBS})
 
+add_executable(cpu_validate
+    src/validation_runner.cpp
+)
+target_link_libraries(cpu_validate PRIVATE cpu_core)
+
 enable_testing()
 
 set(TEST_WORKING_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tests")
@@ -127,3 +132,28 @@ add_executable(test_cpu_integration
 target_link_libraries(test_cpu_integration PRIVATE cpu_core)
 add_test(NAME test_cpu_integration COMMAND test_cpu_integration)
 set_tests_properties(test_cpu_integration PROPERTIES WORKING_DIRECTORY "${TEST_WORKING_DIR}")
+
+add_test(NAME validation_tiny4
+    COMMAND cpu_validate ${CMAKE_CURRENT_SOURCE_DIR}/configs/tiny4.json
+            ${CMAKE_CURRENT_SOURCE_DIR}/validation/programs/tiny4_add.asm
+            --expect A=4)
+add_test(NAME validation_8bit_von_neumann
+    COMMAND cpu_validate ${CMAKE_CURRENT_SOURCE_DIR}/configs/8bit.json
+            ${CMAKE_CURRENT_SOURCE_DIR}/validation/programs/8bit_arithmetic.asm
+            --expect R0=4 --expect FLAGS=2)
+add_test(NAME validation_8bit_harvard
+    COMMAND cpu_validate ${CMAKE_CURRENT_SOURCE_DIR}/configs/8bit_harvard.json
+            ${CMAKE_CURRENT_SOURCE_DIR}/validation/programs/8bit_arithmetic.asm
+            --expect R0=4 --expect FLAGS=2)
+add_test(NAME validation_16bit_multiply
+    COMMAND cpu_validate ${CMAKE_CURRENT_SOURCE_DIR}/configs/16bit.json
+            ${CMAKE_CURRENT_SOURCE_DIR}/validation/programs/16bit_multiply.asm
+            --expect R0=42)
+add_test(NAME validation_call_branch_stack
+    COMMAND cpu_validate ${CMAKE_CURRENT_SOURCE_DIR}/configs/8bit.json
+            ${CMAKE_CURRENT_SOURCE_DIR}/validation/programs/call_branch.asm
+            --expect R0=0 --expect R2=42 --expect SP=65535)
+add_test(NAME validation_declarative_mmio
+    COMMAND cpu_validate ${CMAKE_CURRENT_SOURCE_DIR}/configs/8bit.json
+            ${CMAKE_CURRENT_SOURCE_DIR}/validation/programs/mmio_multiply.asm
+            --expect R4=65)

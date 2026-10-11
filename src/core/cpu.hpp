@@ -20,6 +20,7 @@ class CPU {
     void reset();
 
     RegisterFile &get_registers() { return regs_; }
+    const RegisterFile &get_registers() const { return regs_; }
     Memory &get_memory() { return mem_; }
     ALU &get_alu() { return alu_; }
     Executor &get_executor() { return executor_; }

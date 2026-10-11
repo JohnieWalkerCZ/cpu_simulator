@@ -54,6 +54,8 @@ The simulator includes a dynamic multi-pass assembler, a microcoded instruction 
 │   ├── 16bit.json
 │   └── tiny4.json
 ├── CONFIGURATION.md                # Configuration reference manual
+├── VALIDATION.md                   # Reproducible simulator validation
+├── validation                      # Assembly programs used by CTest validation
 ├── diagrams                        # Architecture and execution diagrams
 │   ├── classes.mmd                 # Class diagram
 │   ├── classes.png
@@ -113,6 +115,31 @@ The simulator includes a dynamic multi-pass assembler, a microcoded instruction 
     ├── test_memory.cpp
     └── test_register_file.cpp
 ```
+---
+
+## Reproducible Validation
+
+The `cpu_validate` executable runs a JSON-defined architecture headlessly,
+assembles a supplied program, checks expected register values, and can export a
+deterministic JSON execution trace. The checked matrix covers 4-bit, 8-bit,
+16-bit, Von Neumann, and Harvard configurations.
+
+```bash
+./run_validation.sh
+```
+
+For a single trace-producing run:
+
+```bash
+./run_demo.sh
+```
+
+See [VALIDATION.md](VALIDATION.md) for the methodology, observed results,
+scope comparison, and model limitations.
+
+The SOČ submission source is `latex/main-prinos.tex`; `latex/build.sh` builds
+that canonical document. Other `.tex` files in `latex/` are older drafts.
+
 ---
 
 ## System Diagrams & Visualization

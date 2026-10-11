@@ -1,0 +1,2 @@
+ADD A, B
+HLT

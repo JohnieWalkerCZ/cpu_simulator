@@ -1,0 +1,34 @@
+\newcommand{\basicDescription}[3]{
+    \begin{itemize}
+        \item \textbf{URL:} \texttt{#1}
+        \item \textbf{Funkce:} #2
+        \item \textbf{Uživatelský scénář:} #3
+    \end{itemize}
+}
+
+\usepackage{xparse}
+
+\NewDocumentCommand{\smartForm}{m m m +m +m +m}{%
+    \subsubsection*{#1}
+    
+    \begin{itemize}
+        \item \textbf{Nadpis:} \uv{#2}
+        \item \textbf{Popisek:} \uv{#3}
+        
+        \item \textbf{Vstupy:}
+        \begin{itemize}
+            #4
+        \end{itemize}
+        
+        \item \textbf{Akce:}
+        \begin{itemize}
+            #5
+        \end{itemize}
+        
+        \item \textbf{Zpracování chyb:} #6
+    \end{itemize}
+}
+
+\newcommand{\formItem}[2]{\item \textbf{#1:} #2}
+\newcommand{\inputItem}[2]{\item \textbf{#1:} #2}
+\newcommand{\actionItem}[2]{\item \textbf{#1:} #2}

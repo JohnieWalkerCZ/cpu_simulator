@@ -708,22 +708,33 @@ inline void DrawALUOutputWire(ImDrawList *draw_list, BusHighlighter &h,
 }
 
 /**
- * @brief Draws the MMIO Connection wire. Only renders when active.
+ * @brief Draws the memory-to-peripheral MMIO bus, highlighting active access.
  */
 inline void DrawMMIOConnection(ImDrawList *draw_list, BusHighlighter &h,
-                               ImVec2 mem_pos, ImVec2 mmio_pos, float mmio_h,
+                               ImVec2 mem_pos, float mem_w, ImVec2 mmio_pos,
+                               float mmio_h,
                                ImU32 col_inactive, ImU32 col_active,
                                float zoom) {
-    if (h.mmio_path <= 0.01f)
-        return;
     PointList mmio_path;
-    mmio_path.add(ImVec2(mem_pos.x + 50.0f * zoom, mem_pos.y));
-    mmio_path.add(ImVec2(mmio_pos.x + 50.0f * zoom, mmio_pos.y + mmio_h));
+    ImVec2 start(mem_pos.x + mem_w, mem_pos.y + 20.0f * zoom);
+    ImVec2 end(mmio_pos.x, mmio_pos.y + mmio_h / 2.0f);
+    float bend_x = (start.x + end.x) / 2.0f;
+    mmio_path.add(start);
+    mmio_path.add(ImVec2(bend_x, start.y));
+    mmio_path.add(ImVec2(bend_x, end.y));
+    mmio_path.add(end);
 
+    // MMIO is part of the memory address space, so keep that topology visible
+    // even between accesses; active traffic is drawn over this base bus.
+    mmio_path.draw(draw_list, col_inactive, 0.0f);
     mmio_path.draw(draw_list,
                    MixGlowColor(col_inactive, col_active, h.mmio_path),
                    h.mmio_path);
     mmio_path.draw_flow(draw_list, h.mmio_path, col_active);
+    draw_list->AddText(ImGui::GetFont(), ImGui::GetFontSize() * zoom * 0.75f,
+                       ImVec2(bend_x + 4.0f * zoom,
+                              (start.y + end.y) / 2.0f - 8.0f * zoom),
+                       col_inactive, "MMIO");
 }
 
 /**
@@ -732,7 +743,8 @@ inline void DrawMMIOConnection(ImDrawList *draw_list, BusHighlighter &h,
 
 inline void DrawSignalBuses(ImDrawList *draw_list, CPU &cpu, GUIState &gui,
                             ImVec2 reg_pos, float reg_file_w, float reg_file_h,
-                            ImVec2 ctrl_pos, ImVec2 mem_pos, ImVec2 mmio_pos,
+                            ImVec2 ctrl_pos, ImVec2 mem_pos, float mem_w,
+                            ImVec2 mmio_pos,
                             float mmio_h, float alu_cx, float alu_top_y,
                             ImVec2 alu_poly_out, float pc_y, float db_reg_y,
                             const std::vector<float> &reg_drawn_y,
@@ -765,8 +777,8 @@ inline void DrawSignalBuses(ImDrawList *draw_list, CPU &cpu, GUIState &gui,
                       db_reg_y, col_inactive, col_alubus, zoom);
 
     // 7. MMIO Connection
-    DrawMMIOConnection(draw_list, h, mem_pos, mmio_pos, mmio_h, col_inactive,
-                       col_active, zoom);
+    DrawMMIOConnection(draw_list, h, mem_pos, mem_w, mmio_pos, mmio_h,
+                       col_inactive, col_active, zoom);
 }
 
 // ============================================================================
@@ -1161,7 +1173,7 @@ inline void UI_SystemSchematic(CPU &cpu, GUIState &gui) {
     }
 
     DrawSignalBuses(draw_list, cpu, gui, reg_pos, reg_file_w, reg_file_h,
-                    ctrl_pos, mem_pos, mmio_pos, mmio_h, alu_cx, alu_top_y,
+                    ctrl_pos, mem_pos, mem_w, mmio_pos, mmio_h, alu_cx, alu_top_y,
                     alu_poly_out, pc_y, db_reg_y, reg_drawn_y, col_inactive,
                     col_abus, col_dbus, col_irbus, col_alubus, col_active);
 

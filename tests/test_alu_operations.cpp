@@ -24,6 +24,31 @@ int main() {
         auto res_8_wrap = cpu.get_alu().execute("SUB", 0, 1, 0, 8);
         assert(res_8_wrap.value == 255);
 
+        // Independent 8-bit arithmetic oracle: check every operand pair
+        // against native integer arithmetic and separately derived flags.
+        for (unsigned a = 0; a < 256; ++a) {
+            for (unsigned b = 0; b < 256; ++b) {
+                const unsigned sum = a + b;
+                const unsigned add_result = sum & 0xFF;
+                const auto add = cpu.get_alu().execute("ADD", a, b, 0, 8);
+                const word_t add_flags = (add_result == 0 ? 1 : 0) |
+                                         (sum > 0xFF ? 2 : 0) |
+                                         ((~(a ^ b) & (a ^ add_result) & 0x80) ? 4 : 0) |
+                                         ((add_result & 0x80) ? 8 : 0);
+                assert(add.value == add_result);
+                assert((add.flags_register & add.flags_mask) == add_flags);
+
+                const unsigned sub_result = (a - b) & 0xFF;
+                const auto sub = cpu.get_alu().execute("SUB", a, b, 0, 8);
+                const word_t sub_flags = (sub_result == 0 ? 1 : 0) |
+                                         (a < b ? 2 : 0) |
+                                         (((a ^ b) & (a ^ sub_result) & 0x80) ? 4 : 0) |
+                                         ((sub_result & 0x80) ? 8 : 0);
+                assert(sub.value == sub_result);
+                assert((sub.flags_register & sub.flags_mask) == sub_flags);
+            }
+        }
+
         // 2b. >64-bit width: ALU must compute and mask correctly using the
         // full word_t range, not just the low 64 bits.
         word_t a_wide = parse_word("0xFFFFFFFFFFFFFFFF0000000000000001");

@@ -1,0 +1,4 @@
+LDI R0, 6
+LDI R1, 7
+MUL R0, R1
+HLT

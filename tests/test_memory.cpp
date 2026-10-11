@@ -215,6 +215,23 @@ int main() {
             mem.port_write(0x50, 99); // must not throw
         }
 
+        // 10. Data accesses use the configured byte order in both directions.
+        {
+            Config little_cfg = create_mock_config(256, 16);
+            little_cfg.endianness = "little";
+            Memory little(little_cfg);
+            little.write(0x20, 0x1234, 16);
+            assert(little.read(0x20, false, 8) == 0x34);
+            assert(little.read(0x21, false, 8) == 0x12);
+
+            Config big_cfg = create_mock_config(256, 16);
+            big_cfg.endianness = "big";
+            Memory big(big_cfg);
+            big.write(0x20, 0x1234, 16);
+            assert(big.read(0x20, false, 8) == 0x12);
+            assert(big.read(0x21, false, 8) == 0x34);
+        }
+
         std::cout << "Memory unit tests passed successfully!\n";
         return 0;
     } catch (const std::exception &e) {

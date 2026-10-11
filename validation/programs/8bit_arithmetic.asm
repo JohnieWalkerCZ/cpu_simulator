@@ -1,0 +1,4 @@
+LDI R0, 250
+LDI R1, 10
+ADD R0, R1
+HLT
