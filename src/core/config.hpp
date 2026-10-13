@@ -38,6 +38,11 @@ struct ALUOp {
     std::string expression;
     std::unordered_map<std::string, std::string> flag_rules;
     int latency;
+    // Mini-language program (alternative to `expression`): list of source
+    // lines, e.g. { "acc = 0;", "for i in 0..width { ... }", "return acc;" }.
+    // If non-empty, `expression` may be omitted. Kept last so existing
+    // aggregate initializers keep working.
+    std::vector<std::string> program;
 };
 
 struct MicroOp {

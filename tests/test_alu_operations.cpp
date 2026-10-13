@@ -56,6 +56,99 @@ int main() {
         assert(regs.read(sp_idx) == 65534); // SP decremented
         assert(mem.read(65534) == 42);      // Pushed value verified
 
+        // 4. ALU mini-language programs: ops defined with loops/conditionals
+        {
+            ALUOp mul;
+            mul.name = "MUL";
+            mul.code = 20;
+            mul.latency = 1;
+            mul.program = {"acc = 0;", "for i in 0..width {",
+                           "  if ((b >> i) & 1) { acc = acc + (a << i); }",
+                           "}", "return acc;"};
+            mul.flag_rules = {{"Z", "result_zero"}};
+            cfg.alu_ops.push_back(mul);
+
+            ALUOp dot4;
+            dot4.name = "DOT4";
+            dot4.code = 21;
+            dot4.latency = 1;
+            dot4.program = {
+                "acc = 0;", "for i in 0..4 {",
+                "  acc = acc + ((a >> (i * 8)) & 0xFF) * ((b >> (i * 8)) & 0xFF);",
+                "}", "return acc;"};
+            cfg.alu_ops.push_back(dot4);
+
+            ALUOp popcnt;
+            popcnt.name = "POPCNT";
+            popcnt.code = 22;
+            popcnt.latency = 1;
+            popcnt.program = {"n = a;", "c = 0;", "while (n) {",
+                              "  c = c + (n & 1);", "  n = n >> 1;", "}",
+                              "return c;"};
+            cfg.alu_ops.push_back(popcnt);
+
+            ALUOp maxop;
+            maxop.name = "MAX";
+            maxop.code = 23;
+            maxop.latency = 1;
+            maxop.program = {"if (a >= b) { return a; } else { return b; }"};
+            cfg.alu_ops.push_back(maxop);
+
+            assert(cfg.validate());
+
+            CPU cpu2(cfg);
+            auto &alu2 = cpu2.get_alu();
+
+            // shift-and-add multiplication
+            auto r1 = alu2.execute("MUL", 13, 11, 0, 8);
+            assert(r1.value == 143);
+            auto r2 = alu2.execute("MUL", 0, 123, 0, 8);
+            assert(r2.value == 0);
+            assert((r2.flags_register & 1) != 0); // Z flag set
+            auto r3 = alu2.execute("MUL", 200, 2, 0, 8);
+            assert(r3.value == 144); // 400 mod 256
+
+            // dot product of 4 packed bytes
+            auto r4 = alu2.execute("DOT4", 0x01020304, 0x01010101, 0, 32);
+            assert(r4.value == 10);
+
+            // popcount via while loop
+            auto r5 = alu2.execute("POPCNT", 0b101101, 0, 0, 8);
+            assert(r5.value == 4);
+
+            // max via if/else and comparison operators
+            assert(alu2.execute("MAX", 5, 9, 0, 8).value == 9);
+            assert(alu2.execute("MAX", 9, 5, 0, 8).value == 9);
+
+            // new comparison/logical operators also work in plain expressions
+            assert(ALU::is_valid_expression("a == b"));
+            assert(ALU::is_valid_expression("(a > b) && (c != 0)"));
+
+            // invalid programs are rejected
+            assert(!ALU::is_valid_program({"for i in {", "}"}));
+            assert(!ALU::is_valid_program({"x = ;"}));
+            assert(ALU::is_valid_program({"if (a) { return 1; }"}));
+        }
+
+        // 5. Infinite loops in programs abort via the step limit
+        {
+            Config cfg3 = cfg;
+            ALUOp hang;
+            hang.name = "HANG";
+            hang.code = 30;
+            hang.latency = 1;
+            hang.program = {"while (1) { x = 1; }", "return 0;"};
+            cfg3.alu_ops.push_back(hang);
+            ALU alu3(cfg3);
+            bool threw = false;
+            try {
+                alu3.execute("HANG", 0, 0, 0, 8);
+            } catch (const std::runtime_error &) {
+                threw = true;
+            }
+            assert(threw);
+        }
+
         std::cout << "ALU operations and masking tests passed successfully!\n";
         return 0;
     } catch (const std::exception &e) {

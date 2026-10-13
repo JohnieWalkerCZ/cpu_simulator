@@ -133,7 +133,8 @@ The `alu` object configures the Arithmetic Logic Unit's operations and how statu
 *   **Description:** Defines a single ALU operation.
     *   **`name`** (`string`): The identifier for this ALU operation (e.g., `"ADD"`, `"SUB"`, `"AND"`). This name is used in microcode `"alu"` actions.
     *   **`code`** (`integer`, optional): A numeric code. Currently unused by the simulator but could be used for future instruction encoding schemes.
-    *   **`expression`** (`string`): The core arithmetic or logical calculation for this operation. It takes operands `a`, `b`, and `c` (where `c` is typically unused) and produces a result. Examples: `"a + b"`, `"a - b"`, `"a & b"`, `"~a"`.
+    *   **`expression`** (`string`): The core arithmetic or logical calculation for this operation. It takes operands `a`, `b`, and `c` (where `c` is typically unused) and produces a result. Examples: `"a + b"`, `"a - b"`, `"a & b"`, `"~a"`. Required unless `program` is given. Besides the arithmetic, bitwise and shift operators, expressions also support comparisons (`==`, `!=`, `<`, `<=`, `>`, `>=`) and logical operators (`&&`, `||`), which evaluate to `1` (true) or `0` (false).
+    *   **`program`** (`array` of `string` or `string`, optional): An alternative to `expression` for operations that need more than a single expression, e.g. loops. The program is written in a tiny C-like mini-language (see 4.4 below) and executes atomically: from the programmer's point of view the whole program behaves as one ALU operation. May be given either as an array of source lines or as a single string with newlines. When `program` is present, `expression` may be omitted.
     *   **`flag_rules`** (`object`, optional): Maps flag names to their evaluation logic for this specific operation.
         *   Keys are flag names (must match names defined in `alu.flags`).
         *   Values can be:
@@ -147,6 +148,36 @@ The `alu` object configures the Arithmetic Logic Unit's operations and how statu
             *   An empty string (`""`) or absent value: Indicates the flag is not affected by this operation.
             *   A custom expression string (e.g., `"!(res & 1)"`): A boolean expression evaluated to determine the flag's state. The result of the ALU operation is available as `res`.
     *   **`latency`** (`integer`, optional, default: `1`): The number of clock cycles this operation takes to complete. Used to introduce stalls in the microcode pipeline.
+
+### 4.4. ALU mini-language (`program`)
+
+When a single expression is not enough, an `ALUOp` may define `program`: a short program that can use local variables, conditionals and loops. The program runs to completion inside one ALU invocation, so the operation still appears atomic to the simulated program (its visible `latency` is governed by the op's `latency` field as usual).
+
+**Statements:**
+*   `name = expr;` — assignment (variables are created on first assignment).
+*   `if (expr) { ... } else { ... }` — conditional (`else` is optional).
+*   `while (expr) { ... }` — loop while the condition is non-zero.
+*   `for name in expr..expr { ... }` — loop with `name` counting from the first expression (inclusive) to the second (exclusive).
+*   `return expr;` — ends the program and sets the operation result.
+*   `// comment` — line comment.
+
+**Expressions** use the same syntax as `expression` (Section 4.3), extended with multi-character variable names. In addition to the operands `a`, `b`, `c`, programs can read `width` (the operation width in bits). A program without `return` yields `0`. To protect against infinite loops, execution is capped at 1,000,000 steps and aborts with a diagnostic error when exceeded. Intermediate values are computed at full precision; only the final result is masked to the operation width.
+
+**Example** — shift-and-add multiplication (the algorithm used by hardware multipliers):
+```json
+{
+  "name": "MUL", "code": 20,
+  "program": [
+    "acc = 0;",
+    "for i in 0..width {",
+    "  if ((b >> i) & 1) { acc = acc + (a << i); }",
+    "}",
+    "return acc;"
+  ],
+  "flag_rules": { "Z": "result_zero" },
+  "latency": 1
+}
+```
 
 ---
 
