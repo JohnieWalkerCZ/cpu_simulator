@@ -141,3 +141,11 @@ add_executable(test_cpu_integration
 target_link_libraries(test_cpu_integration PRIVATE cpu_core)
 add_test(NAME test_cpu_integration COMMAND test_cpu_integration)
 set_tests_properties(test_cpu_integration PROPERTIES WORKING_DIRECTORY "${TEST_WORKING_DIR}")
+
+# 8. Instruction Preview Test (configurator, no GUI needed)
+add_executable(test_instruction_preview
+    tests/test_instruction_preview.cpp
+)
+target_link_libraries(test_instruction_preview PRIVATE cpu_core)
+add_test(NAME test_instruction_preview COMMAND test_instruction_preview)
+set_tests_properties(test_instruction_preview PROPERTIES WORKING_DIRECTORY "${TEST_WORKING_DIR}")

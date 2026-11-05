@@ -209,6 +209,22 @@ for you:
   `Config::from_json()` + `validate()` rules the simulator uses. The
   status line shows whether the configuration is valid; Export and Launch
   are blocked while it is invalid.
+* **ALU inputs are automatic:** an ALU operation's `a`, `b`, `c` are
+  bound at run time by the microcode `alu` action of the instruction
+  that uses the operation (its `a`/`b`/`c` arguments; the result width
+  comes from its `out`). They are not declared in the ALU tab.
+* **Latency mode lives on the instruction, not on the ALU operation:**
+  an ALU operation only has a `latency` in cycles. Each instruction has
+  a `latency` and a `latency_mode` (`dynamic` / `strict` / `bottleneck` /
+  `additive`); with no latency set the mode is ignored and the loader
+  forces dynamic. The Instructions tab explains the selected mode in
+  plain words and warns when it is ignored.
+* **Instruction preview:** the Instructions tab shows the selected
+  instruction as assembly (`ADD dest, src`), its encoding, a table of
+  its micro-ops with inputs, outputs and cycle counts, the effective
+  latency under the selected mode, and warnings for unresolved
+  references (`@name` not in the encoding, `$REG` not a register,
+  unknown ALU op).
 * **Round-trip:** the configurator edits the JSON document itself, so a
   loaded file saved untouched keeps its content (values, hex strings such
   as `"0x2000"`, nested sub-registers and raw peripheral JSON). Saving

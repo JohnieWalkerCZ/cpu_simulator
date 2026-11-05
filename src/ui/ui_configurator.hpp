@@ -12,6 +12,7 @@
 
 #include "app_launcher.hpp"
 #include "core/config.hpp"
+#include "instruction_preview.hpp"
 #include "ui_common.hpp"
 #include <algorithm>
 #include <cctype>
@@ -937,6 +938,14 @@ inline void DrawAluTab(ConfiguratorState &st) {
         EditJsonKeyValueLines(st, "##flagrules", op, "flag_rules",
                               base + "/flag_rules", false);
         ImGui::Separator();
+        ImGui::TextWrapped(
+            "Inputs a, b, c are automatic: they are bound at run time by "
+            "the microcode 'alu' action of the instruction that uses this "
+            "operation (its a/b/c arguments; the result width comes from "
+            "its 'out'). You do not declare them here. The latency *type* "
+            "(mode) is not set on the operation either: it lives on each "
+            "instruction, in the Instructions tab.");
+        ImGui::Separator();
         if (ImGui::Button("Remove this operation")) {
             alu["operations"].erase(alu["operations"].begin() + st.sel_alu_op);
             st.sel_alu_op = 0;
@@ -993,6 +1002,62 @@ inline bool ParseEncodingText(const std::string &text, nlohmann::json &out,
         return false;
     }
     return true;
+}
+
+inline std::string JoinComma(const std::vector<std::string> &items) {
+    std::string out;
+    for (size_t i = 0; i < items.size(); ++i) {
+        if (i > 0)
+            out += ", ";
+        out += items[i];
+    }
+    return out;
+}
+
+// Instruction preview: assembly form, encoding, per-micro-op
+// inputs -> outputs with cycle counts, effective latency, warnings.
+// Pure derivation lives in instruction_preview.hpp; this only renders it.
+inline void DrawInstructionPreview(const nlohmann::json &doc,
+                                   const nlohmann::json &inst) {
+    const InstructionPreview::Preview pv =
+        InstructionPreview::Build(doc, inst);
+    ImGui::Text("Preview:");
+    ImGui::Text("  %s", pv.assembly.c_str());
+    ImGui::TextDisabled("  Encoding: %s",
+                        JoinComma(pv.encoding_tokens).c_str());
+    if (ImGui::BeginTable("inst_preview", 5,
+                          ImGuiTableFlags_Borders |
+                              ImGuiTableFlags_RowBg)) {
+        ImGui::TableSetupColumn("#");
+        ImGui::TableSetupColumn("Micro-op");
+        ImGui::TableSetupColumn("Inputs");
+        ImGui::TableSetupColumn("Outputs");
+        ImGui::TableSetupColumn("Cycles");
+        ImGui::TableHeadersRow();
+        for (size_t i = 0; i < pv.uops.size(); ++i) {
+            const auto &u = pv.uops[i];
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::Text("%zu", i + 1);
+            ImGui::TableNextColumn();
+            ImGui::TextWrapped("%s", u.summary.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextWrapped("%s", JoinComma(u.inputs).c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextWrapped("%s", JoinComma(u.outputs).c_str());
+            ImGui::TableNextColumn();
+            ImGui::Text("%d", u.latency);
+        }
+        ImGui::EndTable();
+    }
+    ImGui::Text("Effective latency: %d cycles (%s)",
+                pv.effective_cycles, pv.effective_explanation.c_str());
+    ImGui::TextWrapped("Mode as written: '%s'; mode applied by the loader: "
+                       "'%s'.",
+                       pv.mode_raw.c_str(), pv.mode_effective.c_str());
+    for (const auto &w : pv.warnings)
+        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f), "Warning: %s",
+                           w.c_str());
 }
 
 inline void DrawInstructionsTab(ConfiguratorState &st) {
@@ -1052,6 +1117,31 @@ inline void DrawInstructionsTab(ConfiguratorState &st) {
                                           "additive"};
             EditJsonCombo(st, "Latency mode", inst, "latency_mode", modes, 4,
                           "dynamic");
+        }
+        {
+            // Plain-words explanation of the mode the loader will
+            // actually apply, plus an honest warning when it is ignored.
+            const int lat_now = inst.value("latency", -1);
+            const std::string mode_raw =
+                inst.value("latency_mode", "dynamic");
+            const std::string mode_eff =
+                InstructionPreview::EffectiveLatencyMode(mode_raw, lat_now);
+            ImGui::TextWrapped(
+                "%s",
+                InstructionPreview::ModeExplanation(mode_eff).c_str());
+            if (lat_now <= 0) {
+                ImGui::TextColored(
+                    ImVec4(1.0f, 0.7f, 0.2f, 1.0f),
+                    "Warning: no latency is set, so this latency mode is "
+                    "ignored and the loader forces dynamic mode.");
+            } else if (mode_raw != mode_eff && mode_raw != "fixed" &&
+                       mode_raw != "max") {
+                ImGui::TextColored(
+                    ImVec4(1.0f, 0.7f, 0.2f, 1.0f),
+                    "Warning: with a latency set, the loader maps mode '%s' "
+                    "to '%s'.",
+                    mode_raw.c_str(), mode_eff.c_str());
+            }
         }
         {
             std::string enc_text = EncodingToText(
@@ -1142,6 +1232,8 @@ inline void DrawInstructionsTab(ConfiguratorState &st) {
                                 "least one.");
         }
         ImGui::EndChild();
+        ImGui::Separator();
+        DrawInstructionPreview(doc, inst);
         ImGui::Separator();
         if (ImGui::Button("Remove this instruction")) {
             insts.erase(insts.begin() + st.sel_instruction);
