@@ -308,3 +308,16 @@ The expressions used in `"condition"`, `"expr"`, and function arguments follow a
     *   Function calls usable anywhere inside an expression, returning a value: `sys_read(addr)` (reads a byte from CPU memory) and `host_pop_char()` (pops one buffered host input character via the peripheral's `host_pop_` hook). These are distinct from the `"call"` AST node type above, which invokes side-effecting functions (`trigger_interrupt`, `sys_write`, `host_print`) and discards any return value.
     *   Identifiers (register names, internal state names, `value` context)
     *   Parenthesized expressions `(...)`
+
+---
+
+## 7. Graphical Configurator
+
+The `cpu_configurator` binary (`cmake --build build --target cpu_configurator`) is a graphical editor for these JSON files. It edits the JSON document directly in forms, so values that the loader would otherwise normalize (hex strings such as `"0x2000"`, nested `sub_registers`, raw peripheral AST JSON) are preserved as written.
+
+*   Start it with no argument for a blank, valid template, or pass a configuration file to open it: `./cpu_configurator ../configs/8bit.json`.
+*   Preset buttons load the shipped configurations from `configs/`.
+*   Tabs cover System, Registers, Memory, ALU, Instructions, Peripherals, and a raw JSON view (edit the text, press Apply to replace the document).
+*   The document is validated live with the same rules as the simulator (`Config::from_json()` + `validate()`). Export JSON and Launch Simulator are blocked while the configuration is invalid.
+*   **Launch Simulator** saves the current file and starts `cpu_sim` with it. In the simulator, the Control Tower's **Edit in Configurator** button does the reverse: it opens the loaded configuration in the configurator.
+*   Saving writes the document with 2-space indentation. Key order and line breaks are normalized by the serializer, but the content (all values) is unchanged.

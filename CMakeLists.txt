@@ -7,10 +7,19 @@ include(FetchContent)
 
 FetchContent_Declare(
     nlohmann_json_single
-    URL "https://raw.githubusercontent.com/nlohmann/json/develop/include/nlohmann/json.hpp"
+    # Pinned release asset: the single-header amalgamation. The develop
+    # branch URL used to point at the same file, but upstream split
+    # json.hpp into many headers, so it no longer compiles standalone.
+    URL "https://github.com/nlohmann/json/releases/download/v3.12.0/json.hpp"
     DOWNLOAD_NO_EXTRACT TRUE
 )
 FetchContent_MakeAvailable(nlohmann_json_single)
+
+# The single-header download lands as <src>/json.hpp, but the code includes
+# <nlohmann/json.hpp>: mirror it into a nlohmann/ subdirectory so the
+# include resolves without a system-installed nlohmann/json package.
+file(COPY ${nlohmann_json_single_SOURCE_DIR}/json.hpp
+     DESTINATION ${nlohmann_json_single_SOURCE_DIR}/nlohmann)
 
 add_library(nlohmann_json INTERFACE)
 target_include_directories(nlohmann_json INTERFACE ${nlohmann_json_single_SOURCE_DIR})
@@ -70,6 +79,11 @@ add_executable(cpu_sim
     src/main.cpp
 )
 target_link_libraries(cpu_sim cpu_core imgui SDL2::SDL2 ${OPENGL_LIBRARIES} ${CMAKE_DL_LIBS})
+
+add_executable(cpu_configurator
+    src/configurator_main.cpp
+)
+target_link_libraries(cpu_configurator cpu_core imgui SDL2::SDL2 ${OPENGL_LIBRARIES} ${CMAKE_DL_LIBS})
 
 enable_testing()
 

@@ -32,6 +32,7 @@ int main(int argc, char **argv) {
     CPU cpu(cfg);
     PeripheralsState p_state;
     InitializePeripherals(cpu, p_state);
+    const std::string config_path = argv[1];
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0)
         return -1;
@@ -89,7 +90,7 @@ int main(int argc, char **argv) {
             UpdateHighlights(cpu, gui.highlighter, delta_time);
             UpdateStackFrameTracking(cpu, gui);
 
-            UI_ControlTower(cpu, gui, p_state);
+            UI_ControlTower(cpu, gui, p_state, config_path, argv[0]);
             UI_RegisterFile(cpu, gui); // Pass GUIState
             UI_ALUMonitor(cpu);
             UI_MemoryView(cpu, gui);
