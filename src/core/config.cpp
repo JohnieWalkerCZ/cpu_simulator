@@ -215,8 +215,19 @@ Config Config::from_json(const nlohmann::json &j) {
                 ALUOp alu_op;
                 alu_op.name = op.at("name").get<std::string>();
                 alu_op.code = op.value("code", (uint8_t)0);
-                alu_op.expression = op.at("expression").get<std::string>();
+                alu_op.expression = op.value("expression", "");
                 alu_op.latency = op.value("latency", 1);
+
+                // `program` is either a single string or an array of lines.
+                if (op.contains("program")) {
+                    const auto &pj = op["program"];
+                    if (pj.is_string()) {
+                        alu_op.program.push_back(pj.get<std::string>());
+                    } else if (pj.is_array()) {
+                        for (const auto &line : pj)
+                            alu_op.program.push_back(line.get<std::string>());
+                    }
+                }
 
                 if (op.contains("flag_rules")) {
                     for (auto &[flag_name, logic_type] :
@@ -474,8 +485,15 @@ bool Config::validate() const {
             return false;
         alu_codes.insert(op.code);
 
-        if (op.latency < 1 || !ALU::is_valid_expression(op.expression))
+        if (op.latency < 1)
             return false;
+        if (!op.program.empty()) {
+            if (!ALU::is_valid_program(op.program))
+                return false;
+        } else if (op.expression.empty() ||
+                   !ALU::is_valid_expression(op.expression)) {
+            return false;
+        }
     }
 
     int reg_bits = registers.size() <= 1 ? 1 : 0;
