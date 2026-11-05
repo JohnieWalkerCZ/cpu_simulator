@@ -1,10 +1,13 @@
 #pragma once
+#include "app_launcher.hpp"
 #include "ui_common.hpp"
 #include <cstdint>
 #include <exception>
 
 inline void UI_ControlTower(CPU &cpu, GUIState &state,
-                            PeripheralsState &p_state) {
+                            PeripheralsState &p_state,
+                            const std::string &config_path = "",
+                            const char *argv0 = nullptr) {
     ImGui::Begin("Control Tower");
 
     if (state.is_running) {
@@ -117,6 +120,24 @@ inline void UI_ControlTower(CPU &cpu, GUIState &state,
     if (cpu.is_halted()) {
         ImGui::TextColored(ImVec4(1, 0, 0, 1), "CPU STATUS: HALTED");
     }
+
+    ImGui::Separator();
+    ImGui::Text("Configuration:");
+    static std::string configurator_launch_message;
+    if (config_path.empty())
+        ImGui::BeginDisabled();
+    if (ImGui::Button("Edit in Configurator")) {
+        AppLauncher::LaunchSiblingApp(argv0, "cpu_configurator", config_path,
+                                      configurator_launch_message);
+    }
+    if (config_path.empty())
+        ImGui::EndDisabled();
+    if (!configurator_launch_message.empty()) {
+        ImGui::SameLine();
+        ImGui::TextWrapped("%s", configurator_launch_message.c_str());
+    }
+    ImGui::TextWrapped("Loaded config: %s",
+                       config_path.empty() ? "(none)" : config_path.c_str());
 
     ImGui::Separator();
     ImGui::Text("Register Visualization Options:");

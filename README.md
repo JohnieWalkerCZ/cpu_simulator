@@ -52,6 +52,7 @@ The simulator includes a dynamic multi-pass assembler, a microcoded instruction 
 │   ├── 8bit.json
 │   ├── 8bit_harvard.json
 │   ├── 16bit.json
+│   ├── 16bit_lab.json
 │   └── tiny4.json
 ├── CONFIGURATION.md                # Configuration reference manual
 ├── diagrams                        # Architecture and execution diagrams
@@ -95,6 +96,8 @@ The simulator includes a dynamic multi-pass assembler, a microcoded instruction 
 │   │   ├── ui_alu_monitor.hpp
 │   │   ├── ui_assembler.hpp
 │   │   ├── ui_common.hpp           # Shared GUIState, snapshots, bus highlighting
+│   │   ├── ui_configurator.hpp     # Graphical CPU configurator (forms + JSON view)
+│   │   ├── app_launcher.hpp        # Two-way launch helper (sim <-> configurator)
 │   │   ├── ui_control_tower.hpp
 │   │   ├── ui_cpu.hpp
 │   │   ├── ui_cpu_pointlist.hpp
@@ -104,6 +107,7 @@ The simulator includes a dynamic multi-pass assembler, a microcoded instruction 
 │   │   ├── ui_register_file.hpp
 │   │   └── ui_system_schematic.hpp
 │   └── main.cpp                    # SDL2/OpenGL/ImGui entry point & main loop
+│   └── configurator_main.cpp       # Entry point for the CPU configurator
 └── tests                           # Unit and integration test suites
     ├── test_alu_operations.cpp
     ├── test_assembler.cpp
@@ -178,7 +182,61 @@ To compile the project, ensure your development environment has:
    ```
 3. This generates the primary binaries inside the build output:
    * `cpu_sim`: The graphic visual sandbox environment.
+   * `cpu_configurator`: The graphical CPU configurator (see below).
    * `test_*`: Verification binaries mapping to each core engine component.
+
+---
+
+## Graphical Configurator
+
+`cpu_configurator` is a graphical editor for CPU configurations. Instead of
+hand-editing JSON, you fill in forms and it writes the configuration file
+for you:
+
+```bash
+./cpu_configurator                  # start with a blank valid template
+./cpu_configurator ../configs/8bit.json   # open an existing configuration
+```
+
+* **Top bar:** file path with Open / Save / Save As, preset buttons for the
+  shipped configurations (`tiny4`, `8bit`, `8bit_harvard`, `16bit`,
+  `16bit_lab`), Export JSON, and **Launch Simulator**.
+* **Tabs:** System, Registers (including recursive sub-registers with
+  offset or mask slicing), Memory, ALU (flags and operations, including the
+  `program` mini-language), Instructions (encoding and microcode),
+  Peripherals (including raw-JSON AST hooks), and a raw JSON view/edit tab.
+* **Validation:** the edited document is validated live with the same
+  `Config::from_json()` + `validate()` rules the simulator uses. The
+  status line shows whether the configuration is valid; Export and Launch
+  are blocked while it is invalid.
+* **ALU inputs are automatic:** an ALU operation's `a`, `b`, `c` are
+  bound at run time by the microcode `alu` action of the instruction
+  that uses the operation (its `a`/`b`/`c` arguments; the result width
+  comes from its `out`). They are not declared in the ALU tab.
+* **Latency mode lives on the instruction, not on the ALU operation:**
+  an ALU operation only has a `latency` in cycles. Each instruction has
+  a `latency` and a `latency_mode` (`dynamic` / `strict` / `bottleneck` /
+  `additive`); with no latency set the mode is ignored and the loader
+  forces dynamic. The Instructions tab explains the selected mode in
+  plain words and warns when it is ignored.
+* **Instruction preview:** the Instructions tab shows the selected
+  instruction as assembly (`ADD dest, src`), its encoding, a table of
+  its micro-ops with inputs, outputs and cycle counts, the effective
+  latency under the selected mode, and warnings for unresolved
+  references (`@name` not in the encoding, `$REG` not a register,
+  unknown ALU op).
+* **Round-trip:** the configurator edits the JSON document itself, so a
+  loaded file saved untouched keeps its content (values, hex strings such
+  as `"0x2000"`, nested sub-registers and raw peripheral JSON). Saving
+  re-serializes with 2-space indentation, which normalizes key order and
+  line breaks.
+
+Two-way launch: **Launch Simulator** in the configurator saves the current
+configuration and starts `cpu_sim` with it; **Edit in Configurator** in the
+simulator's Control Tower starts `cpu_configurator` with the configuration
+the simulator loaded. Both buttons look for the sibling binary next to the
+running executable and report a clear message when it has not been built
+yet.
 
 ---
 
@@ -193,7 +251,7 @@ Start the GUI executable by passing the relative path to an architecture configu
 ### Visual Interface Guide
 Once loaded, the graphical workspace organizes execution monitoring into specialized windows:
 
-* **Control Tower:** Provides physical clock speed control, execution modes (run by whole instructions or single microcode clock cycles), and state triggers.
+* **Control Tower:** Provides physical clock speed control, execution modes (run by whole instructions or single microcode clock cycles), and state triggers. It also shows the loaded configuration file and an **Edit in Configurator** button, which opens the configuration in `cpu_configurator`.
 * **Micro-op Pipeline:** Highlights the current microcode step in the control unit pipeline. Visualizes active register arguments, instruction bit layouts, the active execution latency mode (Strict, Bottleneck, Additive, or Dynamic), and provides a visual progress bar indicating elapsed execution clock cycles against structural targets.
 * **Live Assembler:** Allows you to write and modify custom assembly programs on the fly. The built-in reference table displays mnemonic formats and expected parameter types derived from the loaded schema.
 * **Register File:** Monitors runtime values in hexadecimal, decimal, and bitwise forms across all physical registers and virtual sub-registers.
