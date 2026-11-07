@@ -195,6 +195,20 @@ inline Preview Build(const nlohmann::json &doc, const nlohmann::json &inst) {
     static const std::unordered_set<std::string> kSpecialRegs = {
         "PC", "SP", "FLAGS", "NEXT_PC"};
 
+    // The first encoding element is the opcode literal, so it must match
+    // the instruction's opcode; anything else means the assembled binary
+    // would carry a different opcode than the executor dispatches on.
+    if (inst.contains("encoding") && inst["encoding"].is_array() &&
+        !inst["encoding"].empty() &&
+        inst["encoding"][0].is_number_integer() &&
+        inst["encoding"][0].get<int>() != inst.value("opcode", 0))
+        pv.warnings.push_back(
+            "Encoding starts with " +
+            std::to_string(inst["encoding"][0].get<int>()) +
+            " but the opcode is " +
+            std::to_string(inst.value("opcode", 0)) +
+            "; the first encoding element must be the opcode.");
+
     if (pv.latency <= 0)
         pv.warnings.push_back(
             "No instruction latency is set, so the latency mode is "

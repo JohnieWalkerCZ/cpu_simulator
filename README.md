@@ -204,7 +204,8 @@ for you:
 * **Tabs:** System, Registers (including recursive sub-registers with
   offset or mask slicing), Memory, ALU (flags and operations, including the
   `program` mini-language), Instructions (encoding and microcode),
-  Peripherals (including raw-JSON AST hooks), and a raw JSON view/edit tab.
+  Problems, Peripherals (including raw-JSON AST hooks), and a raw JSON
+  view/edit tab.
 * **Validation:** the edited document is validated live with the same
   `Config::from_json()` + `validate()` rules the simulator uses. The
   status line shows whether the configuration is valid; Export and Launch
@@ -225,6 +226,15 @@ for you:
   latency under the selected mode, and warnings for unresolved
   references (`@name` not in the encoding, `$REG` not a register,
   unknown ALU op).
+* **Problems:** under the selected instruction's preview, a Problems
+  list shows everything wrong with that instruction, each as a problem
+  line followed by a concrete fix naming the field and value to change
+  (e.g. `encoding[0] is 6, but the opcode is 5` -- `Set "encoding":
+  [5, ...] so the first element equals "opcode"`). A Problems tab
+  lists all problems in the document grouped by area (System /
+  Registers / ALU / Instructions / Memory / Peripherals), and the top
+  status line summarizes the count and the first problem. The checks
+  mirror the loader's validation rules (`src/ui/config_diagnostics.hpp`).
 * **Round-trip:** the configurator edits the JSON document itself, so a
   loaded file saved untouched keeps its content (values, hex strings such
   as `"0x2000"`, nested sub-registers and raw peripheral JSON). Saving

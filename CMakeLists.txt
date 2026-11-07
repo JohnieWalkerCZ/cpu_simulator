@@ -149,3 +149,11 @@ add_executable(test_instruction_preview
 target_link_libraries(test_instruction_preview PRIVATE cpu_core)
 add_test(NAME test_instruction_preview COMMAND test_instruction_preview)
 set_tests_properties(test_instruction_preview PROPERTIES WORKING_DIRECTORY "${TEST_WORKING_DIR}")
+
+# 9. Config Diagnostics Test
+add_executable(test_config_diagnostics
+    tests/test_config_diagnostics.cpp
+)
+target_link_libraries(test_config_diagnostics PRIVATE cpu_core)
+add_test(NAME test_config_diagnostics COMMAND test_config_diagnostics)
+set_tests_properties(test_config_diagnostics PROPERTIES WORKING_DIRECTORY "${TEST_WORKING_DIR}")

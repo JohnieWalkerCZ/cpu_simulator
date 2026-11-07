@@ -119,6 +119,24 @@ int main() {
                p.effective_cycles == 2);
     }
 
+    // Encoding/opcode mismatch: ADD with the opcode renumbered to 42
+    // but the encoding still starting with 5.
+    {
+        json inst = *FindInst(doc, "ADD");
+        inst["opcode"] = 42;
+        Preview p = Build(doc, inst);
+        // latency-ignored + encoding/opcode mismatch
+        assert(p.warnings.size() == 2);
+        bool found = false;
+        for (const auto &w : p.warnings)
+            if (w.find("opcode") != std::string::npos)
+                found = true;
+        assert(found);
+        inst["encoding"][0] = 42;
+        p = Build(doc, inst);
+        assert(p.warnings.size() == 1); // only the latency warning left
+    }
+
     // Broken references: @nope, $NOPE, unknown ALU op.
     {
         json inst = json::parse(

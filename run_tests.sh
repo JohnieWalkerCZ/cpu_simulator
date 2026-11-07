@@ -27,6 +27,7 @@ TESTS=(
     "test_assembler"
     "test_cpu_integration"
     "test_instruction_preview"
+    "test_config_diagnostics"
 )
 
 PASSED=0

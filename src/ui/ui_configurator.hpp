@@ -4,13 +4,17 @@
 // file round-trips faithfully -- nested sub-registers, hex strings such as
 // "0x2000" and raw peripheral JSON are preserved as written. The document
 // is validated live with Config::from_json() + Config::validate(); Export
-// and Launch are blocked while it is invalid.
+// and Launch are blocked while it is invalid. On top of the loader's
+// pass/fail verdict, ConfigDiagnostics::Diagnose() lists every problem
+// with a concrete fix: per instruction under its editor, and all of them
+// grouped by area in the Problems tab.
 //
 // Layout: top bar (file path, presets, Save / Save As / Export / Launch,
 // validation status) plus tabs for System, Registers, Memory, ALU,
-// Instructions, Peripherals and a raw JSON view.
+// Instructions, Problems, Peripherals and a raw JSON view.
 
 #include "app_launcher.hpp"
+#include "config_diagnostics.hpp"
 #include "core/config.hpp"
 #include "instruction_preview.hpp"
 #include "ui_common.hpp"
@@ -70,6 +74,42 @@ inline std::string JsonScalarToString(const nlohmann::json &v) {
     if (v.is_string())
         return v.get<std::string>();
     return v.dump();
+}
+
+// Smallest non-negative integer not used as `key` in any object of `arr`,
+// capped at `max_value`. Returns -1 when every value in [0, max_value] is
+// taken. Used so a newly added ALU operation or instruction gets the first
+// free code/opcode instead of colliding with an existing one (code 0 is
+// only free when nothing uses it yet).
+inline int FirstFreeCode(const nlohmann::json &arr, const char *key,
+                         int max_value) {
+    if (!arr.is_array())
+        return 0;
+    std::vector<bool> used(static_cast<size_t>(max_value) + 1, false);
+    for (const auto &item : arr) {
+        if (item.is_object() && item.contains(key) &&
+            item[key].is_number_integer()) {
+            const int v = item[key].get<int>();
+            if (v >= 0 && v <= max_value)
+                used[static_cast<size_t>(v)] = true;
+        }
+    }
+    for (int v = 0; v <= max_value; ++v)
+        if (!used[static_cast<size_t>(v)])
+            return v;
+    return -1;
+}
+
+// Keep an instruction's encoding in sync with its opcode: the first
+// encoding element is the opcode literal (it occupies opcode_width bits
+// in the decoder layout), so it must equal `opcode`. A missing or empty
+// encoding becomes [opcode]; otherwise its first element is replaced.
+inline void SyncEncodingWithOpcode(nlohmann::json &inst, int opcode) {
+    if (!inst.contains("encoding") || !inst["encoding"].is_array() ||
+        inst["encoding"].empty())
+        inst["encoding"] = nlohmann::json::array({opcode});
+    else
+        inst["encoding"][0] = opcode;
 }
 
 // Commit an edited word-sized value (register initial, segment start/end,
@@ -214,6 +254,8 @@ struct ConfiguratorState {
     bool dirty = false;
     bool valid = false;
     std::string validation_msg = "Not validated yet.";
+    int problem_count = 0; // issues found by ConfigDiagnostics::Diagnose
+    std::vector<ConfigDiagnostics::Issue> problems; // same list, cached
     std::string action_msg;
     std::string launch_message;
     UITheme theme = UITheme::MODERN_DARK;
@@ -300,97 +342,44 @@ struct ConfiguratorState {
         return true;
     }
 
+    // Live validation: the loader (Config::from_json + validate())
+    // stays authoritative for the pass/fail verdict that gates Export
+    // and Launch, while ConfigDiagnostics::Diagnose() supplies the
+    // detailed problem list shown in the Problems tab and under each
+    // instruction. Diagnose() never throws on malformed documents, so
+    // it also runs when the loader cannot parse the document at all.
     void RefreshValidation() {
+        const std::vector<ConfigDiagnostics::Issue> issues =
+            ConfigDiagnostics::Diagnose(doc);
+        problem_count = static_cast<int>(issues.size());
+        problems = issues;
         try {
             Config cfg = Config::from_json(doc);
             valid = cfg.validate();
-            validation_msg = valid ? "Valid configuration."
-                                   : ExplainInvalid(doc);
         } catch (const std::exception &e) {
             valid = false;
             validation_msg =
                 std::string("Cannot parse/validate: ") + e.what();
+            if (!issues.empty())
+                validation_msg += " (" + std::to_string(issues.size()) +
+                                  (issues.size() == 1 ? " problem"
+                                                     : " problems") +
+                                  "; see the Problems tab.)";
+            last_validated_version = doc_version;
+            return;
+        }
+        if (issues.empty()) {
+            validation_msg =
+                valid ? "Valid configuration."
+                      : "Invalid CPU configuration (see the Problems "
+                        "tab).";
+        } else {
+            validation_msg = std::to_string(issues.size()) +
+                             (issues.size() == 1 ? " problem: "
+                                                 : " problems: ") +
+                             issues.front().problem;
         }
         last_validated_version = doc_version;
-    }
-
-    // Cheap, specific explanations for the most common failures.
-    // Config::validate() itself only returns a bool, so this mirrors its
-    // headline rules to give the user something actionable.
-    static std::string ExplainInvalid(const nlohmann::json &doc) {
-        using namespace ConfiguratorDetail;
-        if (!doc.contains("name") || !doc["name"].is_string())
-            return "Missing \"name\".";
-        if (!doc.contains("data_bus") ||
-            !doc["data_bus"].contains("width"))
-            return "Missing \"data_bus.width\".";
-        const int dw = doc["data_bus"].value("width", 0);
-        if (dw < 4 || dw > 128 || dw % 4 != 0)
-            return "data_bus.width must be a multiple of 4 between 4 and "
-                   "128.";
-        if (!doc.contains("address_bus") ||
-            !doc["address_bus"].contains("width"))
-            return "Missing \"address_bus.width\".";
-        const int aw = doc["address_bus"].value("width", 0);
-        if (aw < 4 || aw > 128 || aw % 4 != 0)
-            return "address_bus.width must be a multiple of 4 between 4 "
-                   "and 128.";
-        if (!doc.contains("memory") || !doc["memory"].contains("size"))
-            return "Missing \"memory.size\".";
-
-        std::unordered_set<std::string> reg_names;
-        int pc_count = 0;
-        std::function<void(const nlohmann::json &)> walk_regs =
-            [&](const nlohmann::json &reg) {
-                if (!reg.is_object())
-                    return;
-                const std::string name = reg.value("name", "");
-                if (!name.empty() && !reg_names.insert(name).second)
-                    return;
-                const std::string role = reg.value("role", "");
-                if (role == "pc" || role == "program_counter")
-                    ++pc_count;
-                if (reg.contains("sub_registers"))
-                    for (const auto &sub : reg["sub_registers"])
-                        walk_regs(sub);
-            };
-        if (doc.contains("registers")) {
-            for (const char *group : {"general_purpose", "special"}) {
-                if (!doc["registers"].contains(group))
-                    continue;
-                for (const auto &reg : doc["registers"][group])
-                    walk_regs(reg);
-            }
-        }
-        if (pc_count != 1)
-            return "Exactly one register must have the program_counter (pc) "
-                   "role; found " +
-                   std::to_string(pc_count) + ".";
-
-        std::unordered_set<std::string> op_names;
-        std::unordered_set<int> op_codes;
-        if (doc.contains("alu") && doc["alu"].contains("operations")) {
-            for (const auto &op : doc["alu"]["operations"]) {
-                if (!op_names.insert(op.value("name", "")).second)
-                    return "Duplicate ALU operation name: " +
-                           op.value("name", "") + ".";
-                if (!op_codes.insert(op.value("code", 0)).second)
-                    return "Duplicate ALU operation code.";
-            }
-        }
-        std::unordered_set<std::string> inst_names;
-        std::unordered_set<int> inst_opcodes;
-        if (doc.contains("instruction_set") &&
-            doc["instruction_set"].contains("instructions")) {
-            for (const auto &inst : doc["instruction_set"]["instructions"]) {
-                if (!inst_names.insert(inst.value("name", "")).second)
-                    return "Duplicate instruction name: " +
-                           inst.value("name", "") + ".";
-                if (!inst_opcodes.insert(inst.value("opcode", 0)).second)
-                    return "Duplicate instruction opcode.";
-            }
-        }
-        return "Invalid CPU configuration (see CONFIGURATION.md).";
     }
 };
 
@@ -871,13 +860,19 @@ inline void DrawAluTab(ConfiguratorState &st) {
             st.sel_alu_op = static_cast<int>(i);
     }
     if (ImGui::SmallButton("+ Add operation")) {
-        alu["operations"].push_back({{"name", "OP"},
-                                     {"code", 0},
-                                     {"expression", "a + b"},
-                                     {"latency", 1}});
-        st.sel_alu_op = static_cast<int>(alu["operations"].size()) - 1;
-        st.ClearTextBufs();
-        st.MarkDirty();
+        const int code =
+            FirstFreeCode(alu["operations"], "code", 255);
+        if (code < 0) {
+            st.action_msg = "No free ALU code left (0-255 are all used).";
+        } else {
+            alu["operations"].push_back({{"name", "OP"},
+                                         {"code", code},
+                                         {"expression", "a + b"},
+                                         {"latency", 1}});
+            st.sel_alu_op = static_cast<int>(alu["operations"].size()) - 1;
+            st.ClearTextBufs();
+            st.MarkDirty();
+        }
     }
     ImGui::EndChild();
     ImGui::SameLine();
@@ -1060,6 +1055,75 @@ inline void DrawInstructionPreview(const nlohmann::json &doc,
                            w.c_str());
 }
 
+// Problems of one instruction: each issue as a red problem line followed
+// by its concrete fix. Rendered under the instruction's Preview panel.
+inline void DrawInstructionProblems(const nlohmann::json &doc,
+                                    const nlohmann::json &inst) {
+    const std::vector<ConfigDiagnostics::Issue> issues =
+        ConfigDiagnostics::DiagnoseInstruction(doc, inst);
+    ImGui::Text("Problems:");
+    if (issues.empty()) {
+        ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f),
+                           "No problems in this instruction.");
+        return;
+    }
+    for (const auto &issue : issues) {
+        ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s",
+                           issue.problem.c_str());
+        ImGui::TextWrapped("Fix: %s", issue.fix.c_str());
+    }
+}
+
+// All problems in the document, grouped by area. Rendered as the
+// "Problems" tab; the top status line only shows the count and the
+// first problem. The list is cached in the state by RefreshValidation,
+// so opening the tab does not re-run the diagnosis.
+inline void DrawProblemsTab(ConfiguratorState &st) {
+    if (st.problems.empty()) {
+        ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "No problems.");
+        return;
+    }
+    static const char *areas[] = {"System", "Registers", "ALU",
+                                  "Instructions", "Memory", "Peripherals"};
+    for (const char *area : areas) {
+        bool first_in_area = true;
+        for (const auto &issue : st.problems) {
+            if (ConfigDiagnostics::AreaOf(issue) != area)
+                continue;
+            if (first_in_area) {
+                ImGui::Separator();
+                ImGui::Text("%s:", area);
+                first_in_area = false;
+            }
+            ImGui::TextWrapped("%s", issue.where.c_str());
+            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s",
+                               issue.problem.c_str());
+            ImGui::TextWrapped("Fix: %s", issue.fix.c_str());
+        }
+    }
+    // Any issue whose area is not one of the six above (none are
+    // expected, but a future rule should not silently disappear).
+    bool other_heading_shown = false;
+    for (const auto &issue : st.problems) {
+        const std::string area = ConfigDiagnostics::AreaOf(issue);
+        bool known = false;
+        for (const char *a : areas)
+            if (area == a)
+                known = true;
+        if (known)
+            continue;
+        if (!other_heading_shown) {
+            ImGui::Separator();
+            ImGui::Text("Other:");
+            other_heading_shown = true;
+        }
+        ImGui::TextWrapped("%s", issue.where.c_str());
+        ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s",
+                           issue.problem.c_str());
+        ImGui::TextWrapped("Fix: %s", issue.fix.c_str());
+    }
+}
+
 inline void DrawInstructionsTab(ConfiguratorState &st) {
     nlohmann::json &doc = st.doc;
     if (!doc.contains("instruction_set") ||
@@ -1079,17 +1143,26 @@ inline void DrawInstructionsTab(ConfiguratorState &st) {
             st.sel_instruction = static_cast<int>(i);
     }
     if (ImGui::SmallButton("+ Add instruction")) {
-        nlohmann::json fresh_inst;
-        fresh_inst["name"] = "NEW";
-        fresh_inst["opcode"] = 0;
-        fresh_inst["encoding"] = nlohmann::json::array({0});
-        nlohmann::json halt_uop;
-        halt_uop["action"] = "halt";
-        fresh_inst["microcode"] = nlohmann::json::array({halt_uop});
-        insts.push_back(fresh_inst);
-        st.sel_instruction = static_cast<int>(insts.size()) - 1;
-        st.ClearTextBufs();
-        st.MarkDirty();
+        const int opcode =
+            FirstFreeCode(insts, "opcode", 65535);
+        if (opcode < 0) {
+            st.action_msg =
+                "No free instruction opcode left (0-65535 are all used).";
+        } else {
+            nlohmann::json fresh_inst;
+            fresh_inst["name"] = "NEW";
+            fresh_inst["opcode"] = opcode;
+            // Keep the encoding's leading literal in sync with the
+            // opcode, as in every shipped config.
+            fresh_inst["encoding"] = nlohmann::json::array({opcode});
+            nlohmann::json halt_uop;
+            halt_uop["action"] = "halt";
+            fresh_inst["microcode"] = nlohmann::json::array({halt_uop});
+            insts.push_back(fresh_inst);
+            st.sel_instruction = static_cast<int>(insts.size()) - 1;
+            st.ClearTextBufs();
+            st.MarkDirty();
+        }
     }
     ImGui::EndChild();
     ImGui::SameLine();
@@ -1100,7 +1173,12 @@ inline void DrawInstructionsTab(ConfiguratorState &st) {
         nlohmann::json &inst = insts[st.sel_instruction];
         const std::string base = "inst/" + std::to_string(st.sel_instruction);
         EditJsonString(st, "Name", inst, "name", base + "/name");
+        const int old_opcode = inst.value("opcode", 0);
         EditJsonInt(st, "Opcode", inst, "opcode", 0, 0, 65535);
+        if (inst.value("opcode", 0) != old_opcode) {
+            SyncEncodingWithOpcode(inst, inst.value("opcode", 0));
+            st.ClearTextBufs();
+        }
         {
             int lat = inst.value("latency", -1);
             if (ImGui::InputInt("Latency (-1 = none)", &lat)) {
@@ -1157,6 +1235,14 @@ inline void DrawInstructionsTab(ConfiguratorState &st) {
                 } else {
                     st.text_no_resync.erase(base + "/encoding");
                     inst["encoding"] = parsed;
+                    // The other direction of the same invariant: the
+                    // first encoding element is the opcode literal, so
+                    // changing it here renumbers the opcode as well.
+                    if (!parsed.empty() && parsed[0].is_number_integer()) {
+                        const int enc_opcode = parsed[0].get<int>();
+                        if (enc_opcode >= 0 && enc_opcode <= 65535)
+                            inst["opcode"] = enc_opcode;
+                    }
                     st.MarkDirty();
                 }
             }
@@ -1234,6 +1320,8 @@ inline void DrawInstructionsTab(ConfiguratorState &st) {
         ImGui::EndChild();
         ImGui::Separator();
         DrawInstructionPreview(doc, inst);
+        ImGui::Separator();
+        DrawInstructionProblems(doc, inst);
         ImGui::Separator();
         if (ImGui::Button("Remove this instruction")) {
             insts.erase(insts.begin() + st.sel_instruction);
@@ -1459,7 +1547,7 @@ inline void DrawTopBar(ConfiguratorState &st) {
     }
     ImGui::NewLine();
 
-    if (st.valid)
+    if (st.valid && st.problem_count == 0)
         ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "%s",
                            st.validation_msg.c_str());
     else
@@ -1539,6 +1627,10 @@ inline void UI_Configurator(ConfiguratorState &st) {
         }
         if (ImGui::BeginTabItem("Instructions")) {
             ConfiguratorDetail::DrawInstructionsTab(st);
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Problems")) {
+            ConfiguratorDetail::DrawProblemsTab(st);
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Peripherals")) {
