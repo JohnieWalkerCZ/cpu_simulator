@@ -18,11 +18,14 @@
 #include "core/config.hpp"
 #include "instruction_preview.hpp"
 #include "microop_editor.hpp"
+#include "register_layout.hpp"
 #include "ui_common.hpp"
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <unordered_map>
@@ -283,6 +286,11 @@ struct ConfiguratorState {
     int sel_peripheral = 0;
     int sel_periph_reg = 0;
 
+    // Peripheral indices shown in text mode; the rest use the graphical
+    // blocks view (default). Indices shift when a peripheral is removed,
+    // which only ever flips a view back to blocks.
+    std::unordered_set<int> periph_text_view;
+
     void MarkDirty() {
         dirty = true;
         ++doc_version;
@@ -497,7 +505,7 @@ inline void EditJsonKeyValueLines(ConfiguratorState &st, const char *label,
     const nlohmann::json current =
         obj.contains(key) ? obj[key] : nlohmann::json::object();
     std::string text = KeyValueMapToText(current);
-    if (InputTextMultilineBuf(st, label, id, text, ImVec2(-1, 90))) {
+    if (InputTextMultilineBuf(st, label, id, text, ImVec2(-1, 180))) {
         std::vector<std::pair<std::string, std::string>> pairs;
         std::string error;
         if (!ParseKeyValueLines(text, pairs, error)) {
@@ -532,7 +540,7 @@ inline void EditJsonRaw(ConfiguratorState &st, const char *label,
     const nlohmann::json current =
         obj.contains(key) ? obj[key] : nlohmann::json::array();
     std::string text = current.dump(2);
-    if (InputTextMultilineBuf(st, label, id, text, ImVec2(-1, 120))) {
+    if (InputTextMultilineBuf(st, label, id, text, ImVec2(-1, 240))) {
         try {
             const nlohmann::json parsed = nlohmann::json::parse(text);
             st.text_no_resync.erase(id);
@@ -652,11 +660,117 @@ inline void DrawRegisterEditor(ConfiguratorState &st, nlohmann::json &reg,
             return;
         }
     }
+    // Bit bar: where the sub-registers sit inside this register.
+    // Bit 0 is on the right, one block per used parent bit.
+    {
+        const std::vector<RegisterLayout::SubSpan> spans =
+            RegisterLayout::SubRegisterSpans(reg);
+        if (!spans.empty()) {
+            const int pw = reg.value("width", 0);
+            ImGui::Separator();
+            ImGui::Text("Bit layout (%d bits, bit 0 on the right):", pw);
+            static const ImU32 kPalette[] = {
+                IM_COL32(66, 135, 245, 255), IM_COL32(76, 175, 80, 255),
+                IM_COL32(255, 152, 0, 255), IM_COL32(156, 39, 176, 255),
+                IM_COL32(0, 188, 212, 255), IM_COL32(233, 30, 99, 255),
+                IM_COL32(139, 195, 74, 255), IM_COL32(255, 235, 59, 255)};
+            const float bar_h = ImGui::GetTextLineHeight() * 1.6f;
+            const float bar_w = ImGui::GetContentRegionAvail().x;
+            const ImVec2 pos = ImGui::GetCursorScreenPos();
+            ImDrawList *dl = ImGui::GetWindowDrawList();
+            dl->AddRectFilled(
+                pos, ImVec2(pos.x + bar_w, pos.y + bar_h),
+                IM_COL32(90, 90, 90, 255)); // uncovered bits: grey
+            // First owner per bit, and whether more than one
+            // sub-register claims it.
+            std::vector<int> owner(static_cast<size_t>(pw), -1);
+            std::vector<bool> clash(static_cast<size_t>(pw), false);
+            for (size_t s = 0; s < spans.size(); ++s)
+                for (int b : spans[s].bits) {
+                    if (b < 0 || b >= pw)
+                        continue;
+                    if (owner[static_cast<size_t>(b)] < 0)
+                        owner[static_cast<size_t>(b)] = static_cast<int>(s);
+                    else
+                        clash[static_cast<size_t>(b)] = true;
+                }
+            const float bit_w = pw > 0 ? bar_w / static_cast<float>(pw) : 0;
+            for (int b = 0; b < pw; ++b) {
+                const int o = owner[static_cast<size_t>(b)];
+                if (o < 0)
+                    continue;
+                // Bit 0 on the right.
+                const float x0 =
+                    pos.x + static_cast<float>(pw - 1 - b) * bit_w;
+                const ImU32 col =
+                    clash[static_cast<size_t>(b)]
+                        ? IM_COL32(220, 60, 60, 255) // overlap: red
+                        : kPalette[static_cast<size_t>(o) %
+                                   (sizeof(kPalette) / sizeof(*kPalette))];
+                dl->AddRectFilled(ImVec2(x0 + 1, pos.y + 1),
+                                  ImVec2(x0 + bit_w - 1, pos.y + bar_h - 1),
+                                  col);
+            }
+            dl->AddRect(pos, ImVec2(pos.x + bar_w, pos.y + bar_h),
+                        IM_COL32(200, 200, 200, 255));
+            // End ticks: highest bit on the left, bit 0 on the right.
+            const float tick_h = ImGui::GetTextLineHeight();
+            dl->AddText(ImVec2(pos.x, pos.y + bar_h + 2),
+                        IM_COL32(160, 160, 160, 255),
+                        std::to_string(pw - 1).c_str());
+            dl->AddText(ImVec2(pos.x + bar_w -
+                                   ImGui::CalcTextSize("0").x,
+                               pos.y + bar_h + 2),
+                        IM_COL32(160, 160, 160, 255), "0");
+            ImGui::Dummy(ImVec2(bar_w, bar_h + tick_h + 2));
+            for (size_t s = 0; s < spans.size(); ++s) {
+                const RegisterLayout::SubSpan &sp = spans[s];
+                std::string range;
+                if (sp.bits.empty()) {
+                    range = "no bits in range";
+                } else if (sp.is_mask) {
+                    range = "bits {";
+                    for (size_t i = 0; i < sp.bits.size(); ++i) {
+                        if (i > 0)
+                            range += ", ";
+                        range += std::to_string(sp.bits[i]);
+                    }
+                    range += "} (mask)";
+                } else {
+                    range = "bits " + std::to_string(sp.last_bit) + ".." +
+                            std::to_string(sp.first_bit);
+                }
+                if (sp.overlaps)
+                    ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f),
+                                       "%s: %s  (overlaps another "
+                                       "sub-register)",
+                                       sp.name.c_str(), range.c_str());
+                else if (sp.out_of_range)
+                    ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f),
+                                       "%s: %s  (extends past this "
+                                       "register)",
+                                       sp.name.c_str(), range.c_str());
+                else
+                    ImGui::Text("%s: %s", sp.name.c_str(), range.c_str());
+            }
+            bool any_overlap = false;
+            for (const auto &sp : spans)
+                any_overlap = any_overlap || sp.overlaps;
+            if (any_overlap)
+                ImGui::TextColored(
+                    ImVec4(1.0f, 0.35f, 0.35f, 1.0f),
+                    "Red bits are covered by more than one sub-register.");
+            ImGui::TextDisabled("Grey bits are not covered by any "
+                                "sub-register.");
+        }
+    }
     if (ImGui::Button("Add sub-register")) {
         if (!reg.contains("sub_registers"))
             reg["sub_registers"] = nlohmann::json::array();
+        // Start at the first free bit instead of always offset 0.
+        const int off = RegisterLayout::FirstFreeOffset(reg, 1);
         reg["sub_registers"].push_back(
-            {{"name", "SUB"}, {"width", 1}, {"offset", 0}});
+            {{"name", "SUB"}, {"width", 1}, {"offset", off < 0 ? 0 : off}});
         st.ClearTextBufs();
         st.MarkDirty();
     }
@@ -922,7 +1036,7 @@ inline void DrawAluTab(ConfiguratorState &st) {
             }
             ImGui::Text("Program (one statement per line):");
             if (InputTextMultilineBuf(st, "##program", base + "/program",
-                                      prog_text, ImVec2(-1, 150))) {
+                                      prog_text, ImVec2(-1, 240))) {
                 op["program"] = SplitLines(prog_text);
                 st.MarkDirty();
             }
@@ -1157,32 +1271,61 @@ inline void EditMicroOpArg(ConfiguratorState &st, const nlohmann::json &doc,
     } else { // kCondition
         options = MicroOpEditor::ConditionOptions(doc);
     }
-    std::vector<std::string> items = options;
+    // Items: an optional argument offers "(not set)" first; then the
+    // valid options; then "# (literal...)" for operands; then
+    // "Custom...". An unset optional argument (cur == "") used to fall
+    // through to "Custom..." and show an empty, unlabeled text box
+    // underneath -- those were the mystery empty fields. Now it shows
+    // "(not set)" and no box at all.
+    const bool can_unset = !spec.required;
+    const int base = can_unset ? 1 : 0;
+    std::vector<std::string> items;
+    if (can_unset)
+        items.push_back("(not set)");
+    for (const auto &o : options)
+        items.push_back(o);
     if (literal_entry)
         items.push_back("# (literal...)");
     items.push_back("Custom...");
     int idx = static_cast<int>(items.size()) - 1; // "Custom..." default
-    for (int i = 0; i < static_cast<int>(options.size()); ++i)
-        if (options[i] == cur) {
-            idx = i;
-            break;
-        }
+    if (cur.empty() && can_unset) {
+        idx = 0; // "(not set)"
+    } else {
+        for (int i = 0; i < static_cast<int>(items.size()); ++i)
+            if (items[i] == cur) {
+                idx = i;
+                break;
+            }
+        if (literal_entry && !cur.empty() && cur[0] == '#')
+            idx = base + static_cast<int>(options.size());
+    }
     std::vector<const char *> citems;
     for (const auto &s : items)
         citems.push_back(s.c_str());
-    if (ImGui::Combo(spec.label.c_str(), &idx, citems.data(),
+    // Label above the combo, not beside it: the editor column is
+    // narrow and the beside-label was clipped at the window edge.
+    ImGui::Text("%s", spec.label.c_str());
+    if (ImGui::Combo(("##arg_" + key).c_str(), &idx, citems.data(),
                      static_cast<int>(citems.size()))) {
-        if (idx < static_cast<int>(options.size())) {
-            uop[key] = options[idx];
+        if (can_unset && idx == 0) {
+            uop.erase(key); // genuinely unset, not an empty string
+        } else if (idx >= base &&
+                   idx < base + static_cast<int>(options.size())) {
+            uop[key] = options[idx - base];
         } else if (literal_entry &&
-                   idx == static_cast<int>(options.size())) {
+                   idx == base + static_cast<int>(options.size())) {
             uop[key] = "#0"; // editable as free text below
         } else {
             uop[key] = ""; // blank custom value, typed below
         }
         st.MarkDirty();
     }
-    if (std::find(options.begin(), options.end(), cur) == options.end()) {
+    // Free-text box only when the value is a literal or a custom
+    // value, with a visible label saying what it is.
+    if (MicroOpEditor::ShowsTextBox(doc, inst, spec, cur)) {
+        const bool is_literal = literal_entry && cur[0] == '#';
+        ImGui::Text("%s",
+                    is_literal ? "Literal value" : "Custom value");
         std::string v = cur;
         if (InputTextBuf(st, ("##custom_" + key).c_str(),
                          ubase + "/arg/" + key, v)) {
@@ -1320,7 +1463,42 @@ inline void DrawInstructionsTab(ConfiguratorState &st) {
         if (!inst.contains("microcode"))
             inst["microcode"] = nlohmann::json::array();
         nlohmann::json &uops = inst["microcode"];
-        ImGui::BeginChild("uop_list", ImVec2(220, 180), true);
+        // Both panes size to their content instead of a fixed 180px,
+        // so the outer instruction editor scrolls rather than the
+        // inner boxes. The list is one row per micro-op plus the Add
+        // button; the editor is sized to the selected micro-op's
+        // fields (label + control per argument, plus a text box where
+        // one is shown).
+        const float row_h = ImGui::GetTextLineHeightWithSpacing();
+        const float child_pad = ImGui::GetStyle().WindowPadding.y * 2.0f;
+        const float list_h =
+            std::clamp((static_cast<float>(uops.size()) + 1.0f) * row_h +
+                           child_pad,
+                       60.0f, 400.0f);
+        float editor_rows = 2.0f; // Action label + combo
+        if (!uops.empty()) {
+            const nlohmann::json &sel_uop =
+                uops[std::clamp(st.sel_microop, 0,
+                                static_cast<int>(uops.size()) - 1)];
+            const std::vector<MicroOpEditor::ArgSpec> sel_specs =
+                MicroOpEditor::ArgSpecs(sel_uop.value("action", "halt"));
+            std::unordered_set<std::string> known;
+            for (const auto &s : sel_specs) {
+                known.insert(s.key);
+                editor_rows += 2.0f;
+                if (MicroOpEditor::ShowsTextBox(
+                        doc, inst, s,
+                        sel_uop.value(s.key, std::string(""))))
+                    editor_rows += 2.0f; // label + text box
+            }
+            for (auto it = sel_uop.begin(); it != sel_uop.end(); ++it)
+                if (it.key() != "action" && !known.count(it.key()))
+                    editor_rows += 1.0f; // "Other argument" line
+            editor_rows += 1.0f;         // Remove button
+        }
+        const float editor_h =
+            std::clamp(editor_rows * row_h + child_pad, 100.0f, 520.0f);
+        ImGui::BeginChild("uop_list", ImVec2(220, list_h), true);
         for (size_t i = 0; i < uops.size(); ++i) {
             const std::string label =
                 uops[i].value("action", "?") + "###uop" + std::to_string(i);
@@ -1336,7 +1514,7 @@ inline void DrawInstructionsTab(ConfiguratorState &st) {
         }
         ImGui::EndChild();
         ImGui::SameLine();
-        ImGui::BeginChild("uop_editor", ImVec2(0, 180), true);
+        ImGui::BeginChild("uop_editor", ImVec2(0, editor_h), true);
         if (!uops.empty()) {
             st.sel_microop = std::clamp(st.sel_microop, 0,
                                         static_cast<int>(uops.size()) - 1);
@@ -1347,7 +1525,11 @@ inline void DrawInstructionsTab(ConfiguratorState &st) {
                 "copy", "alu", "mem_read", "mem_write", "port_read",
                 "port_write", "coproc_read", "coproc_write", "branch", "halt"};
             const std::string old_action = uop.value("action", "halt");
-            EditJsonCombo(st, "Action", uop, "action", actions, 10, "halt");
+            // Label above the combo, like the argument fields below:
+            // the beside-label was clipped at the window edge.
+            ImGui::Text("Action");
+            EditJsonCombo(st, "##action", uop, "action", actions, 10,
+                          "halt");
             const std::string action = uop.value("action", "halt");
             if (action != old_action) {
                 // The new action needs different arguments: drop the
@@ -1434,6 +1616,214 @@ inline void DrawInstructionsTab(ConfiguratorState &st) {
 
 namespace ConfiguratorDetail {
 
+// Parse a word-sized JSON value (number, or "0x.."/"0b.."/decimal
+// string) into an unsigned 64-bit value. False when it cannot be
+// read as a non-negative address/size.
+inline bool WordValue(const nlohmann::json &v, unsigned long long &out) {
+    try {
+        if (v.is_number_unsigned()) {
+            out = v.get<unsigned long long>();
+            return true;
+        }
+        if (v.is_number_integer() && v.get<long long>() >= 0) {
+            out = static_cast<unsigned long long>(v.get<long long>());
+            return true;
+        }
+        if (v.is_string()) {
+            const word_t w = parse_word(v.get<std::string>());
+            if (w < 0 ||
+                w > static_cast<word_t>(
+                        std::numeric_limits<unsigned long long>::max()))
+                return false;
+            out = static_cast<unsigned long long>(w);
+            return true;
+        }
+    } catch (...) {
+        return false;
+    }
+    return false;
+}
+
+// Horizontal bar showing a peripheral's address range against the
+// whole memory size.
+inline void DrawAddressBar(ConfiguratorState &st, nlohmann::json &p) {
+    unsigned long long start = 0, end = 0, total = 0;
+    bool have_range = false;
+    if (p.contains("address")) {
+        have_range = WordValue(p["address"], start);
+        end = start;
+    } else if (p.contains("address_start") &&
+               p.contains("address_end")) {
+        have_range = WordValue(p["address_start"], start) &&
+                     WordValue(p["address_end"], end);
+    }
+    const nlohmann::json &doc = st.doc;
+    const bool have_total =
+        doc.contains("memory") && doc["memory"].is_object() &&
+        doc["memory"].contains("size") &&
+        WordValue(doc["memory"]["size"], total);
+    if (!have_range || !have_total || total == 0 || end < start) {
+        ImGui::TextDisabled("Address range bar unavailable: set the "
+                            "address range and the memory size first.");
+        return;
+    }
+    const float bar_h = ImGui::GetTextLineHeight() * 1.2f;
+    const float bar_w = ImGui::GetContentRegionAvail().x;
+    const ImVec2 pos = ImGui::GetCursorScreenPos();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(pos, ImVec2(pos.x + bar_w, pos.y + bar_h),
+                      IM_COL32(90, 90, 90, 255));
+    const float x0 = pos.x + bar_w * static_cast<float>(
+                                     static_cast<double>(start) /
+                                     static_cast<double>(total));
+    const float x1 = pos.x + bar_w * static_cast<float>(
+                                     static_cast<double>(end + 1) /
+                                     static_cast<double>(total));
+    dl->AddRectFilled(ImVec2(x0, pos.y + 1),
+                      ImVec2(std::min(x1, pos.x + bar_w), pos.y + bar_h - 1),
+                      IM_COL32(66, 135, 245, 255));
+    dl->AddRect(pos, ImVec2(pos.x + bar_w, pos.y + bar_h),
+                IM_COL32(200, 200, 200, 255));
+    ImGui::Dummy(ImVec2(bar_w, bar_h));
+    char caption[128];
+    std::snprintf(caption, sizeof(caption),
+                  "Address range: 0x%llX..0x%llX of 0x%llX (%llu bytes)",
+                  start, end, total, end - start + 1);
+    ImGui::TextDisabled("%s", caption);
+}
+
+// Edit a string->string (or string->number) JSON object as editable
+// key/value row blocks: one key field and one value field per row,
+// a remove button, and "+ Add row". This is the blocks view of what
+// the text view edits as "key = value" lines; both edit the same
+// JSON object, so switching views loses nothing.
+inline void DrawKeyValueRows(ConfiguratorState &st, nlohmann::json &obj,
+                             const char *key, const std::string &id,
+                             bool numeric_values) {
+    if (!obj.contains(key) || !obj[key].is_object())
+        obj[key] = nlohmann::json::object();
+    nlohmann::json &map = obj[key];
+    std::vector<std::string> keys;
+    for (auto it = map.begin(); it != map.end(); ++it)
+        keys.push_back(it.key());
+    std::string rename_from, rename_to, erase_key;
+    for (size_t i = 0; i < keys.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i));
+        const std::string old_key = keys[i];
+        std::string k = old_key;
+        std::string v = JsonScalarToString(map[old_key]);
+        const float avail = ImGui::GetContentRegionAvail().x;
+        ImGui::SetNextItemWidth(avail * 0.35f);
+        if (InputTextBuf(st, "##k", id + "/k/" + std::to_string(i), k)) {
+            rename_from = old_key;
+            rename_to = k;
+        }
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(avail * 0.45f);
+        if (InputTextBuf(st, "##v", id + "/v/" + std::to_string(i), v)) {
+            if (numeric_values) {
+                nlohmann::json slot = 0;
+                CommitWordText(slot, v);
+                map[old_key] = slot;
+            } else {
+                map[old_key] = v;
+            }
+            st.MarkDirty();
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("x"))
+            erase_key = old_key;
+        ImGui::PopID();
+    }
+    if (!erase_key.empty()) {
+        map.erase(erase_key);
+        st.ClearTextBufs();
+        st.MarkDirty();
+    }
+    if (!rename_from.empty() && rename_from != rename_to) {
+        if (!rename_to.empty() && !map.contains(rename_to)) {
+            map[rename_to] = map[rename_from];
+            map.erase(rename_from);
+            st.ClearTextBufs();
+            st.MarkDirty();
+        } else {
+            st.action_msg =
+                "Key \"" + rename_to + "\" already exists.";
+        }
+    }
+    if (ImGui::SmallButton("+ Add row")) {
+        std::string fresh = "new_key";
+        for (int n = 2; map.contains(fresh); ++n)
+            fresh = "new_key_" + std::to_string(n);
+        map[fresh] = numeric_values ? nlohmann::json(0) : nlohmann::json("");
+        st.ClearTextBufs();
+        st.MarkDirty();
+    }
+}
+
+// Peripheral registers as an editable table: one row per register
+// (name / offset / size / access / initial), a radio button to select
+// the row (its on_read/on_write hooks show below), and a remove
+// button. This is the blocks view; the text view keeps the
+// list + editor form.
+inline void DrawPeripheralRegisterTable(ConfiguratorState &st,
+                                        nlohmann::json &p,
+                                        const std::string &base) {
+    if (!p.contains("registers") || !p["registers"].is_array())
+        p["registers"] = nlohmann::json::array();
+    nlohmann::json &regs = p["registers"];
+    ImGui::TextDisabled("name | offset | size (bytes) | access | initial");
+    int erase_reg = -1;
+    for (size_t i = 0; i < regs.size(); ++i) {
+        nlohmann::json &r = regs[i];
+        const std::string rbase =
+            base + "/preg/" + std::to_string(i);
+        ImGui::PushID(static_cast<int>(i));
+        if (ImGui::RadioButton("##sel", &st.sel_periph_reg,
+                               static_cast<int>(i)))
+            st.MarkDirty();
+        ImGui::SameLine();
+        const float avail = ImGui::GetContentRegionAvail().x;
+        ImGui::SetNextItemWidth(avail * 0.32f);
+        EditJsonString(st, "##rname", r, "name", rbase + "/name");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(avail * 0.14f);
+        EditJsonInt(st, "##roff", r, "offset", 0, 0, 1000000);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(avail * 0.12f);
+        EditJsonInt(st, "##rsize", r, "size_bytes", 1, 1, 16);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(avail * 0.13f);
+        {
+            static const char *acc[] = {"r", "w", "rw"};
+            EditJsonCombo(st, "##racc", r, "access", acc, 3, "rw");
+        }
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(avail * 0.18f);
+        EditJsonWordText(st, "##rinit", r, "initial", rbase + "/initial");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("x"))
+            erase_reg = static_cast<int>(i);
+        ImGui::PopID();
+    }
+    if (erase_reg >= 0) {
+        regs.erase(regs.begin() + erase_reg);
+        st.sel_periph_reg = 0;
+        st.ClearTextBufs();
+        st.MarkDirty();
+    }
+    if (ImGui::SmallButton("+ Add register")) {
+        regs.push_back({{"name", "REG"},
+                        {"offset", 0},
+                        {"size_bytes", 1},
+                        {"access", "rw"},
+                        {"initial", 0}});
+        st.sel_periph_reg = static_cast<int>(regs.size()) - 1;
+        st.ClearTextBufs();
+        st.MarkDirty();
+    }
+}
+
 inline void DrawPeripheralsTab(ConfiguratorState &st) {
     nlohmann::json &doc = st.doc;
     if (!doc.contains("peripherals") || !doc["peripherals"].is_array())
@@ -1479,19 +1869,47 @@ inline void DrawPeripheralsTab(ConfiguratorState &st) {
             EditJsonWordText(st, "Address end", p, "address_end",
                              base + "/address_end");
         }
-        ImGui::Text("Parameters (one per line, e.g. width = 8):");
-        EditJsonKeyValueLines(st, "##params", p, "parameters",
-                              base + "/parameters", false);
-        ImGui::Text("Internal state (one per line, e.g. COUNT = 0):");
-        EditJsonKeyValueLines(st, "##internal", p, "internal_state",
-                              base + "/internal_state", true);
-
-        ImGui::Separator();
-        ImGui::Text("Peripheral registers:");
+        // Blocks/Text toggle. Both views edit the same JSON, so
+        // switching translates both ways with no data loss.
+        const bool text_view =
+            st.periph_text_view.count(st.sel_peripheral) > 0;
+        if (ImGui::SmallButton(text_view ? "Blocks" : "Text")) {
+            if (text_view)
+                st.periph_text_view.erase(st.sel_peripheral);
+            else
+                st.periph_text_view.insert(st.sel_peripheral);
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled(
+            text_view
+                ? "Text view: parameters and state as key = value lines."
+                : "Blocks view: parameters, state and registers as "
+                  "editable blocks.");
         if (!p.contains("registers"))
             p["registers"] = nlohmann::json::array();
         nlohmann::json &regs = p["registers"];
-        ImGui::BeginChild("preg_list", ImVec2(180, 150), true);
+        if (!text_view) {
+            DrawAddressBar(st, p);
+            ImGui::Text("Parameters:");
+            DrawKeyValueRows(st, p, "parameters", base + "/parameters",
+                             false);
+            ImGui::Text("Internal state:");
+            DrawKeyValueRows(st, p, "internal_state",
+                             base + "/internal_state", true);
+            ImGui::Separator();
+            ImGui::Text("Registers:");
+            DrawPeripheralRegisterTable(st, p, base);
+        } else {
+            ImGui::Text("Parameters (one per line, e.g. width = 8):");
+            EditJsonKeyValueLines(st, "##params", p, "parameters",
+                                  base + "/parameters", false);
+            ImGui::Text("Internal state (one per line, e.g. COUNT = 0):");
+            EditJsonKeyValueLines(st, "##internal", p, "internal_state",
+                                  base + "/internal_state", true);
+
+            ImGui::Separator();
+            ImGui::Text("Peripheral registers:");
+            ImGui::BeginChild("preg_list", ImVec2(180, 150), true);
         for (size_t i = 0; i < regs.size(); ++i) {
             const std::string label = regs[i].value("name", "?") + "###preg" +
                                       std::to_string(i);
@@ -1536,6 +1954,7 @@ inline void DrawPeripheralsTab(ConfiguratorState &st) {
             ImGui::TextDisabled("No registers.");
         }
         ImGui::EndChild();
+        } // text view
 
         // AST hooks of the selected peripheral register.
         if (!regs.empty()) {

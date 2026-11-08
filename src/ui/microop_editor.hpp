@@ -197,6 +197,26 @@ inline std::vector<std::string> ConditionOptions(
     return out;
 }
 
+// Whether the editor shows a free-text box under the picker for this
+// argument: exactly when the current value is set but is not one of
+// the picker options (a "#..." literal or a custom value). An unset
+// optional argument shows "(not set)" and no box at all.
+inline bool ShowsTextBox(const nlohmann::json &doc,
+                         const nlohmann::json &inst, const ArgSpec &spec,
+                         const std::string &cur) {
+    if (spec.kind == ArgKind::kBool || cur.empty())
+        return false;
+    std::vector<std::string> options;
+    if (spec.kind == ArgKind::kOperand)
+        options = OperandOptions(doc, inst, spec.writable);
+    else if (spec.kind == ArgKind::kAluOp)
+        options = AluOpNames(doc);
+    else
+        options = ConditionOptions(doc);
+    return std::find(options.begin(), options.end(), cur) ==
+           options.end();
+}
+
 // First valid value for a spec, "" when there is none.
 inline std::string DefaultValue(const nlohmann::json &doc,
                                 const nlohmann::json &inst,

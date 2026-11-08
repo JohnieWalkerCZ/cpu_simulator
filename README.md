@@ -234,7 +234,19 @@ for you:
   `# (literal...)` entry, `Custom...` for free text). Writable slots
   offer only writable targets. Changing the Action drops arguments
   that do not belong to the new action and prefills missing required
-  ones with their first valid option.
+  ones with their first valid option. Field labels sit above their
+  combos; an unset optional argument shows `(not set)` with no empty
+  box underneath. The microcode panes size to their content, so the
+  outer instruction editor scrolls instead of the inner boxes.
+* **Sub-register bit bar:** a register with sub-registers shows where
+  they sit inside it (bit 0 on the right, grey where nothing is
+  covered, red where two sub-registers overlap), and a new
+  sub-register starts at the first free bit.
+* **Peripheral blocks:** peripherals have a Blocks/Text toggle. Blocks
+  view shows the type, an address-range bar against the memory size,
+  parameters and internal state as editable key/value rows, and the
+  registers as a table; Text view keeps the `key = value` boxes. Both
+  edit the same JSON. Multiline text boxes are taller throughout.
 * **Problems:** under the selected instruction's preview, a Problems
   list shows everything wrong with that instruction, each as a problem
   line followed by a concrete fix naming the field and value to change

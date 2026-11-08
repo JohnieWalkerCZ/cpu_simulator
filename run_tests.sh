@@ -29,6 +29,7 @@ TESTS=(
     "test_instruction_preview"
     "test_config_diagnostics"
     "test_microop_editor"
+    "test_register_layout"
 )
 
 PASSED=0

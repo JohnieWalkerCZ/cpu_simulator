@@ -153,6 +153,23 @@ int main() {
         assert(DefaultValue(doc, add, alu[5]).empty()); // update_flags
     }
 
+    // Text box visibility: an unset optional argument shows "(not
+    // set)" and no box; a picker value shows no box; a literal or a
+    // custom value does.
+    {
+        std::vector<ArgSpec> alu = ArgSpecs("alu");
+        const ArgSpec &b = alu[2];   // b (optional), operand
+        const ArgSpec &out = alu[4]; // out, writable operand
+        assert(!ShowsTextBox(doc, add, b, ""));      // unset: no box
+        assert(!ShowsTextBox(doc, add, b, "@src"));  // picker value
+        assert(ShowsTextBox(doc, add, b, "#5"));     // literal
+        assert(ShowsTextBox(doc, add, b, "@nope"));  // custom value
+        assert(!ShowsTextBox(doc, add, out, "@dest"));
+        assert(ShowsTextBox(doc, add, out, "$NEXT_PC")); // not writable
+        assert(!ShowsTextBox(doc, add, alu[5], "")); // bool: never
+        assert(!ShowsTextBox(doc, add, alu[5], "true"));
+    }
+
     std::cout << "test_microop_editor: all assertions passed\n";
     return 0;
 }
