@@ -183,6 +183,141 @@ int main() {
         assert(CanonicalHook(on_write) == on_write);
     }
 
+    // Node paths: string round-trip and lookup.
+    {
+        NodePath p = {PathSeg::Index(1), PathSeg::Key("then"),
+                      PathSeg::Index(0)};
+        assert(PathToString(p) == "1/then/0");
+        NodePath back;
+        assert(ParsePath("1/then/0", back) && back == p);
+        assert(ParsePath("", back) && back.empty());
+        assert(!ParsePath("1/x/0", back));
+        assert(!ParsePath("1/-1", back));
+        assert(!ParsePath("1/", back));
+
+        json hook = json::parse(
+            R"([{"type": "assign", "target": "A", "expr": "0"},
+                {"type": "if", "condition": "v", "then": [
+                    {"type": "call", "func": "host_print", "args": ["1"]}],
+                 "else": []}])");
+        assert(FindNode(hook, {PathSeg::Index(0)}) != nullptr);
+        assert(FindNode(hook, {PathSeg::Index(0)})->value("target", "") ==
+               "A");
+        assert(FindNode(hook, {PathSeg::Index(1), PathSeg::Key("then"),
+                               PathSeg::Index(0)}) != nullptr);
+        assert(FindNode(hook, {PathSeg::Index(2)}) == nullptr);
+        assert(FindNode(hook, {PathSeg::Index(1), PathSeg::Key("else"),
+                               PathSeg::Index(0)}) == nullptr);
+        assert(FindNode(hook, {PathSeg::Index(1), PathSeg::Key("then")}) ==
+               nullptr); // a list path is not a node
+        assert(FindNode(hook, {}) == nullptr);
+        assert(FindList(hook, {}) != nullptr);
+        assert(FindList(hook, {PathSeg::Index(1), PathSeg::Key("then")}) !=
+               nullptr);
+        assert(FindList(hook, {PathSeg::Index(0)}) == nullptr);
+        assert(FindList(hook, {PathSeg::Index(5), PathSeg::Key("then")}) ==
+               nullptr);
+    }
+
+    // Moves: reorder within a list, move into a then-list, and the
+    // rejections (invalid paths, moving into your own descendant).
+    {
+        auto three = [] {
+            return json::parse(
+                R"([{"type": "assign", "target": "A", "expr": "0"},
+                    {"type": "assign", "target": "B", "expr": "0"},
+                    {"type": "assign", "target": "C", "expr": "0"}])");
+        };
+        auto targets = [](const json &h) {
+            std::vector<std::string> out;
+            for (const auto &n : h)
+                out.push_back(n.value("target", "?"));
+            return out;
+        };
+        json h = three();
+        // to_index counts positions in the list as seen before the
+        // move: 2 puts A before C, 3 puts it after C.
+        assert(MoveNode(h, {PathSeg::Index(0)}, {}, 2));
+        assert(targets(h) ==
+               (std::vector<std::string>{"B", "A", "C"}));
+        assert(MoveNode(h, {PathSeg::Index(1)}, {}, 3));
+        assert(targets(h) ==
+               (std::vector<std::string>{"B", "C", "A"}));
+        assert(MoveNode(h, {PathSeg::Index(2)}, {}, 0));
+        assert(targets(h) ==
+               (std::vector<std::string>{"A", "B", "C"}));
+        // Past the end appends; negative clamps to the front.
+        assert(MoveNode(h, {PathSeg::Index(0)}, {}, 99));
+        assert(targets(h) ==
+               (std::vector<std::string>{"B", "C", "A"}));
+        assert(MoveNode(h, {PathSeg::Index(2)}, {}, -5));
+        assert(targets(h) ==
+               (std::vector<std::string>{"A", "B", "C"}));
+        // Invalid source / target: hook untouched, no crash.
+        json before = h;
+        assert(!MoveNode(h, {PathSeg::Index(7)}, {}, 0));
+        assert(!MoveNode(h, {PathSeg::Index(0)},
+                        {PathSeg::Index(5), PathSeg::Key("then")}, 0));
+        assert(!MoveNode(h, {}, {}, 0));
+        assert(h == before);
+
+        // Move into a then-list of another node.
+        json nested = json::parse(
+            R"([{"type": "if", "condition": "v", "then": [
+                    {"type": "assign", "target": "X", "expr": "0"}]},
+                {"type": "assign", "target": "Y", "expr": "0"}])");
+        assert(MoveNode(nested, {PathSeg::Index(1)},
+                        {PathSeg::Index(0), PathSeg::Key("then")}, 0));
+        assert(nested[0]["then"].size() == 2);
+        assert(nested[0]["then"][0].value("target", "") == "Y");
+        assert(nested[0]["then"][1].value("target", "") == "X");
+        assert(nested.size() == 1);
+        // ...and back out to the top level.
+        assert(MoveNode(nested, {PathSeg::Index(0), PathSeg::Key("then"),
+                                 PathSeg::Index(0)},
+                        {}, 1));
+        assert(nested.size() == 2);
+        assert(nested[1].value("target", "") == "Y");
+
+        // Moving a node into itself or its own child list is refused.
+        json self = json::parse(
+            R"([{"type": "if", "condition": "v", "then": [
+                    {"type": "assign", "target": "X", "expr": "0"}]}])");
+        before = self;
+        assert(!MoveNode(self, {PathSeg::Index(0)},
+                         {PathSeg::Index(0), PathSeg::Key("then")}, 0));
+        assert(MoveIsSelfTarget({PathSeg::Index(0)},
+                                {PathSeg::Index(0), PathSeg::Key("then")}));
+        assert(MoveIsSelfTarget({PathSeg::Index(0)},
+                                {PathSeg::Index(0), PathSeg::Key("else")}));
+        // ...but moving into a sibling's child list is fine.
+        assert(!MoveIsSelfTarget({PathSeg::Index(0)},
+                                 {PathSeg::Index(1), PathSeg::Key("then")}));
+        assert(!MoveIsSelfTarget({PathSeg::Index(0)}, {}));
+        assert(self == before);
+
+        // InsertNode and RemoveNode.
+        json ins = three();
+        assert(InsertNode(ins, {}, 1,
+                          json::parse(
+                              R"({"type": "assign", "target": "N",
+                                  "expr": "0"})")));
+        assert(targets(ins) ==
+               (std::vector<std::string>{"A", "N", "B", "C"}));
+        assert(InsertNode(ins, {}, 99,
+                          json::parse(
+                              R"({"type": "assign", "target": "Z",
+                                  "expr": "0"})")));
+        assert(targets(ins).back() == "Z");
+        assert(!InsertNode(ins, {PathSeg::Index(0), PathSeg::Key("then")},
+                           0, json::parse(R"({})")));
+        assert(RemoveNode(ins, {PathSeg::Index(1)}));
+        assert(targets(ins) ==
+               (std::vector<std::string>{"A", "B", "C", "Z"}));
+        assert(!RemoveNode(ins, {PathSeg::Index(9)}));
+        assert(!RemoveNode(ins, {}));
+    }
+
     std::cout << "All hook editor tests passed!" << std::endl;
     return 0;
 }

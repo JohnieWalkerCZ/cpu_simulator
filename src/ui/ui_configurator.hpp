@@ -292,6 +292,20 @@ struct ConfiguratorState {
     // back to blocks.
     std::unordered_set<std::string> hook_text_view;
 
+    // A drag-and-drop of a hook node recorded during rendering, applied
+    // at the end of the hook editor that owns the drop target. Applying
+    // it immediately would mutate the hook array while its lists are
+    // being drawn and invalidate the references the drawing code holds.
+    // `hook_drop_from` is the payload of the drag: "move\n<hook id>\n
+    // <node path>" for a moved block, "new\n<node type>" for a palette
+    // drag; `hook_drop_to_list` is the target list's path ("" is the
+    // top-level list of the hook).
+    bool hook_drop_pending = false;
+    std::string hook_drop_hook_id;
+    std::string hook_drop_from;
+    std::string hook_drop_to_list;
+    int hook_drop_to_index = 0;
+
     void MarkDirty() {
         dirty = true;
         ++doc_version;
@@ -1617,28 +1631,178 @@ inline void DrawInstructionsTab(ConfiguratorState &st) {
 
 namespace ConfiguratorDetail {
 
-// Graphical block editor for one peripheral hook (on_read, on_write or
-// tick_behavior): a JSON array of AST nodes. Each hook has its own
-// Blocks/Text toggle (default Blocks). Text view is the existing
-// EditJsonRaw pretty-printed box; if the typed text does not parse,
-// the text is kept, the error is shown, and Blocks stays disabled
-// until the JSON parses again. A node with an unknown type is
-// preserved as-is and shown greyed-out with a hint to use Text mode.
+// Scratch-style block editor for one peripheral hook (on_read,
+// on_write or tick_behavior): a JSON array of AST nodes. Each node is
+// a coloured, rounded block (if = orange, assign = blue, call =
+// green); `if` blocks are C-shaped, their then/else lists render
+// indented inside the parent block. Blocks are draggable by their
+// header: reorder within a list, or drop into another list (top
+// level, a then-list, an else-list); a palette at the top of each
+// hook editor drags in new blocks. The drag-and-drop model (paths,
+// MoveNode, InsertNode) lives in hook_editor.hpp and is unit-tested;
+// the UI only records a drop in ConfiguratorState and DrawHookEditor
+// applies it after drawing, so the hook array is never mutated while
+// its lists are being drawn.
+//
+// ID safety (this used to crash with ImGui's "3 visible items with
+// conflicting ID!" popup): every hook editor PushIDs its hook id, so
+// the three hooks of one peripheral never share a scope, and every
+// node list PushIDs its path id, so a node 0 in a then-list and a
+// node 0 in an else-list under the same parent are distinct too.
+// Every repeated label inside ("##type", "##up", "##down", "##drag",
+// "##drop_end", "+ Add node", ...) is therefore scoped by hook +
+// list + index. Text view is the existing EditJsonRaw pretty-printed
+// box; if the typed text does not parse, the text is kept, the error
+// is shown, and Blocks stays disabled until the JSON parses again. A
+// node with an unknown type is preserved as-is and shown greyed-out
+// with a hint to use Text mode.
 
 inline void DrawHookNodeList(ConfiguratorState &st,
                              const nlohmann::json &periph,
-                             nlohmann::json &nodes, const std::string &id);
+                             nlohmann::json &nodes, const std::string &id,
+                             const HookEditor::NodePath &list_path,
+                             const std::string &hook_id);
 inline void DrawHookNode(ConfiguratorState &st,
                          const nlohmann::json &periph, nlohmann::json &node,
-                         const std::string &id, int &erase_out,
+                         const std::string &id,
+                         const HookEditor::NodePath &node_path,
+                         const std::string &hook_id, int &erase_out,
                          int &move_out);
 
+// Scratch-style colours per node type: the block background tint and
+// the header text colour. Unknown types get a grey block.
+inline void HookBlockColors(const std::string &type, ImVec4 &bg,
+                            ImVec4 &header) {
+    if (type == "if") {
+        bg = ImVec4(0.42f, 0.26f, 0.08f, 1.0f);
+        header = ImVec4(1.0f, 0.65f, 0.25f, 1.0f);
+    } else if (type == "call") {
+        bg = ImVec4(0.08f, 0.36f, 0.16f, 1.0f);
+        header = ImVec4(0.45f, 0.95f, 0.55f, 1.0f);
+    } else if (type == "assign") {
+        bg = ImVec4(0.10f, 0.24f, 0.46f, 1.0f);
+        header = ImVec4(0.55f, 0.80f, 1.0f, 1.0f);
+    } else {
+        bg = ImVec4(0.25f, 0.25f, 0.25f, 1.0f);
+        header = ImVec4(0.75f, 0.75f, 0.75f, 1.0f);
+    }
+}
+
+// Parse a drag payload: "move\n<hook id>\n<node path>" for a moved
+// block, "new\n<node type>" for a palette drag. Returns false for
+// anything that is not a hook-node drag.
+inline bool ParseHookDragPayload(const std::string &data, bool &is_new,
+                                 std::string &hook_id,
+                                 std::string &path_or_type) {
+    const size_t nl1 = data.find('\n');
+    if (nl1 == std::string::npos)
+        return false;
+    const std::string kind = data.substr(0, nl1);
+    if (kind == "new") {
+        is_new = true;
+        hook_id.clear();
+        path_or_type = data.substr(nl1 + 1);
+        return !path_or_type.empty();
+    }
+    if (kind != "move")
+        return false;
+    const size_t nl2 = data.find('\n', nl1 + 1);
+    if (nl2 == std::string::npos)
+        return false;
+    is_new = false;
+    hook_id = data.substr(nl1 + 1, nl2 - nl1 - 1);
+    path_or_type = data.substr(nl2 + 1);
+    return !hook_id.empty() && !path_or_type.empty();
+}
+
+// Call right after the item that starts a hook-node drag (a block's
+// header handle, or a palette button). `payload` is the full payload
+// string; `label` is the text shown in the drag preview.
+inline void HookDragSource(const std::string &payload, const char *label) {
+    if (ImGui::BeginDragDropSource()) {
+        ImGui::SetDragDropPayload("HOOK_NODE", payload.c_str(),
+                                  payload.size() + 1);
+        ImGui::Text("%s", label);
+        ImGui::EndDragDropSource();
+    }
+}
+
+// Call right after the item that should accept hook-node drops (a
+// block, after EndChild, or a list's trailing drop zone). `index` is
+// the position a drop inserts at; when `split` is true the mouse
+// being in the lower half of the item moves the position one down, so
+// dropping on a block inserts before or after it. While a payload
+// hovers the item an insertion line is drawn at the effective edge.
+// Drops from a different hook, and moves into the dragged node's own
+// descendant, are not accepted at all. A drop is only recorded (into
+// ConfiguratorState, applied by DrawHookEditor after drawing);
+// nothing is mutated here. ImGui accepts the smallest overlapping
+// target, so a nested block wins over the block it sits in.
+inline void HookDropTarget(ConfiguratorState &st,
+                           const std::string &hook_id,
+                           const HookEditor::NodePath &list_path, int index,
+                           bool split) {
+    if (!ImGui::BeginDragDropTarget())
+        return;
+    const ImVec2 mn = ImGui::GetItemRectMin();
+    const ImVec2 mx = ImGui::GetItemRectMax();
+    const bool lower_half =
+        split && ImGui::GetMousePos().y > (mn.y + mx.y) * 0.5f;
+    const int at = lower_half ? index + 1 : index;
+    const ImGuiPayload *hover = ImGui::GetDragDropPayload();
+    bool acceptable = false;
+    if (hover != nullptr && hover->IsDataType("HOOK_NODE")) {
+        const std::string data(static_cast<const char *>(hover->Data));
+        bool is_new = false;
+        std::string src_hook, src_path;
+        if (ParseHookDragPayload(data, is_new, src_hook, src_path)) {
+            if (is_new) {
+                acceptable = true;
+            } else if (src_hook == hook_id) {
+                HookEditor::NodePath from;
+                acceptable =
+                    HookEditor::ParsePath(src_path, from) &&
+                    !HookEditor::MoveIsSelfTarget(from, list_path);
+            }
+        }
+    }
+    if (acceptable) {
+        // AcceptBeforeDelivery makes AcceptDragDropPayload return the
+        // payload while the mouse is still down, so the line shows
+        // only for the smallest (winning) target; the drop is
+        // recorded only on the delivery frame. The default target
+        // rectangle is suppressed: the insertion line is the visual.
+        if (const ImGuiPayload *pl = ImGui::AcceptDragDropPayload(
+                "HOOK_NODE",
+                ImGuiDragDropFlags_AcceptBeforeDelivery |
+                    ImGuiDragDropFlags_AcceptNoDrawDefaultRect)) {
+            const float y = lower_half ? mx.y - 2.0f : mn.y + 2.0f;
+            ImGui::GetWindowDrawList()->AddLine(
+                ImVec2(mn.x, y), ImVec2(mx.x, y), IM_COL32(255, 200, 40, 255),
+                2.0f);
+            if (pl->Delivery) {
+                st.hook_drop_pending = true;
+                st.hook_drop_hook_id = hook_id;
+                st.hook_drop_from =
+                    std::string(static_cast<const char *>(pl->Data));
+                st.hook_drop_to_list = HookEditor::PathToString(list_path);
+                st.hook_drop_to_index = at;
+            }
+        }
+    }
+    ImGui::EndDragDropTarget();
+}
+
 // One hook: Blocks/Text toggle, a hint about the `value` context
-// variable, then either the node blocks or the raw JSON box.
+// variable, then either the node blocks or the raw JSON box. The
+// whole editor is scoped by the hook id (see the header comment):
+// this is what stops the three hooks of one peripheral from
+// colliding on the toggle, "+ Add node", and node labels.
 inline void DrawHookEditor(ConfiguratorState &st,
                            const nlohmann::json &periph, nlohmann::json &obj,
                            const char *key, const std::string &id,
                            const char *value_hint) {
+    ImGui::PushID(id.c_str());
     ImGui::Text("%s (optional):", key);
     const bool bad_json = st.text_no_resync.count(id) > 0;
     const bool not_array = obj.contains(key) && !obj[key].is_array();
@@ -1657,8 +1821,10 @@ inline void DrawHookEditor(ConfiguratorState &st,
         ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::TextDisabled(
-        text_view ? "Text view: the hook as pretty-printed JSON."
-                  : "Blocks view: the hook as AST node blocks.");
+        text_view
+            ? "Text view: the hook as pretty-printed JSON."
+            : "Blocks view: drag a block by its header to move it, "
+              "or drag one in from the palette.");
     ImGui::TextDisabled("%s", value_hint);
     if (text_view) {
         if (bad_json)
@@ -1669,9 +1835,7 @@ inline void DrawHookEditor(ConfiguratorState &st,
             ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f),
                                "A hook must be a JSON array of nodes.");
         EditJsonRaw(st, ("##" + std::string(key)).c_str(), obj, key, id);
-        return;
-    }
-    if (!obj.contains(key)) {
+    } else if (!obj.contains(key)) {
         ImGui::TextDisabled("No nodes yet.");
         if (ImGui::SmallButton("+ Add node")) {
             obj[key] = nlohmann::json::array(
@@ -1680,23 +1844,85 @@ inline void DrawHookEditor(ConfiguratorState &st,
             st.ClearTextBufs();
             st.MarkDirty();
         }
-        return;
+    } else {
+        // Palette: drag a type onto any list, or click to append a
+        // node of that type to this hook's top-level list.
+        ImGui::Text("Palette (drag onto a list, or click to append):");
+        for (const std::string &type : HookEditor::NodeTypes()) {
+            ImVec4 bg, header_col;
+            HookBlockColors(type, bg, header_col);
+            ImGui::PushStyleColor(ImGuiCol_Button, bg);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, header_col);
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, header_col);
+            if (ImGui::SmallButton(type.c_str())) {
+                obj[key].push_back(HookEditor::DefaultNode(
+                    type, HookEditor::AvailableTargets(periph)));
+                st.ClearTextBufs();
+                st.MarkDirty();
+            }
+            ImGui::PopStyleColor(3);
+            HookDragSource("new\n" + type, (type + " block").c_str());
+            ImGui::SameLine();
+        }
+        ImGui::NewLine();
+        DrawHookNodeList(st, periph, obj[key], id, {}, id);
+        // Apply a drag-and-drop recorded while the list was drawing.
+        // The hook array must not be mutated while its lists are
+        // being drawn, so the drop is recorded in ConfiguratorState
+        // and applied here, once drawing is done.
+        if (st.hook_drop_pending && st.hook_drop_hook_id == id) {
+            st.hook_drop_pending = false;
+            bool ok = false;
+            bool is_new = false;
+            std::string src_hook, src_path;
+            if (ParseHookDragPayload(st.hook_drop_from, is_new, src_hook,
+                                     src_path)) {
+                HookEditor::NodePath to_list;
+                if (HookEditor::ParsePath(st.hook_drop_to_list, to_list)) {
+                    if (is_new) {
+                        ok = HookEditor::InsertNode(
+                            obj[key], to_list, st.hook_drop_to_index,
+                            HookEditor::DefaultNode(
+                                src_path,
+                                HookEditor::AvailableTargets(periph)));
+                    } else if (src_hook == id) {
+                        HookEditor::NodePath from;
+                        if (HookEditor::ParsePath(src_path, from))
+                            ok = HookEditor::MoveNode(
+                                obj[key], from, to_list,
+                                st.hook_drop_to_index);
+                    }
+                }
+            }
+            if (ok) {
+                st.ClearTextBufs();
+                st.MarkDirty();
+            }
+        }
     }
-    DrawHookNodeList(st, periph, obj[key], id);
+    ImGui::PopID();
 }
 
 // A vertical list of node blocks, each with move-up / move-down /
-// remove, plus a "+ Add node" button (new node defaults to assign).
+// remove, a trailing drop zone (dropping there appends), and a
+// "+ Add node" button (new node defaults to assign). The list scopes
+// itself by its path id, so a node 0 in a then-list and a node 0 in
+// an else-list under the same parent never share an ImGui ID.
 inline void DrawHookNodeList(ConfiguratorState &st,
                              const nlohmann::json &periph,
-                             nlohmann::json &nodes, const std::string &id) {
+                             nlohmann::json &nodes, const std::string &id,
+                             const HookEditor::NodePath &list_path,
+                             const std::string &hook_id) {
+    ImGui::PushID(id.c_str());
     int erase_idx = -1, move_idx = -1, move_dir = 0;
     for (size_t i = 0; i < nodes.size(); ++i) {
         nlohmann::json &node = nodes[i];
         ImGui::PushID(static_cast<int>(i));
         int erase = 0, move = 0;
+        HookEditor::NodePath node_path = list_path;
+        node_path.push_back(HookEditor::PathSeg::Index(static_cast<int>(i)));
         DrawHookNode(st, periph, node, id + "/" + std::to_string(i),
-                     erase, move);
+                     node_path, hook_id, erase, move);
         if (erase)
             erase_idx = static_cast<int>(i);
         if (move != 0) {
@@ -1719,29 +1945,58 @@ inline void DrawHookNodeList(ConfiguratorState &st,
             st.MarkDirty();
         }
     }
+    // Trailing drop zone: dropping here appends to this list.
+    const float zone_h = nodes.empty() ? 36.0f : 10.0f;
+    ImGui::InvisibleButton("##drop_end",
+                           ImVec2(ImGui::GetContentRegionAvail().x, zone_h));
+    if (nodes.empty()) {
+        const ImVec2 mn = ImGui::GetItemRectMin();
+        ImGui::GetWindowDrawList()->AddText(
+            ImVec2(mn.x + 6.0f, mn.y + 8.0f), IM_COL32(160, 160, 160, 255),
+            "Drop a block here, or use + Add node below.");
+    }
+    HookDropTarget(st, hook_id, list_path,
+                   static_cast<int>(nodes.size()), false);
     if (ImGui::SmallButton("+ Add node")) {
         nodes.push_back(HookEditor::DefaultNode(
             "assign", HookEditor::AvailableTargets(periph)));
         st.ClearTextBufs();
         st.MarkDirty();
     }
+    ImGui::PopID();
 }
 
-// One node block: a type combo (changing it drops fields that do not
-// belong to the new type and prefills the required ones), then exactly
-// the fields that type needs. Move-up / move-down / remove buttons sit
-// on the type row.
+// One node as a Scratch-style block: a rounded, coloured child window
+// with a header (type, drag handle, move-up / move-down / remove) and
+// its fields inline. `if` blocks are C-shaped: their then/else node
+// lists render indented inside the parent block, with an "else:"
+// divider. The whole block is a drop target: dropping on its upper
+// half inserts before it, on its lower half after it (the smallest
+// overlapping target wins, so a nested block wins over the block it
+// sits in). Changing the type rebuilds the node with that type's
+// defaults; unknown types are preserved and shown greyed-out.
 inline void DrawHookNode(ConfiguratorState &st,
                          const nlohmann::json &periph, nlohmann::json &node,
-                         const std::string &id, int &erase_out,
+                         const std::string &id,
+                         const HookEditor::NodePath &node_path,
+                         const std::string &hook_id, int &erase_out,
                          int &move_out) {
     erase_out = 0;
     move_out = 0;
-    if (!HookEditor::IsRepresentable(node)) {
-        ImGui::TextDisabled("Unknown node type -- edit in Text mode:");
-        ImGui::TextWrapped("%s", node.dump(2).c_str());
-    } else {
-        const std::string cur_type = node.value("type", "assign");
+    const bool known = HookEditor::IsRepresentable(node);
+    const std::string cur_type =
+        node.is_object() ? node.value("type", "?") : "?";
+    ImVec4 bg, header_col;
+    HookBlockColors(known ? cur_type : "?", bg, header_col);
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, bg);
+    ImGui::PushStyleColor(
+        ImGuiCol_Border,
+        ImVec4(header_col.x, header_col.y, header_col.z, 0.55f));
+    ImGui::BeginChild("##block", ImVec2(0, 0),
+                      ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
+    // Header: type, drag handle, move-up / move-down / remove.
+    bool type_changed = false;
+    if (known) {
         const std::vector<std::string> types = HookEditor::NodeTypes();
         int idx = 1; // assign
         for (int i = 0; i < static_cast<int>(types.size()); ++i)
@@ -1750,26 +2005,52 @@ inline void DrawHookNode(ConfiguratorState &st,
         std::vector<const char *> citems;
         for (const auto &t : types)
             citems.push_back(t.c_str());
-        ImGui::Text("Node type");
-        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.5f);
+        ImGui::SetNextItemWidth(96.0f);
+        ImGui::PushStyleColor(ImGuiCol_Button, bg);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, header_col);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, header_col);
         if (ImGui::Combo("##type", &idx, citems.data(),
                          static_cast<int>(citems.size()))) {
             node = HookEditor::DefaultNode(
                 types[idx], HookEditor::AvailableTargets(periph));
             st.ClearTextBufs();
             st.MarkDirty();
-            return;
+            type_changed = true;
         }
-        ImGui::SameLine();
-        if (ImGui::ArrowButton("##up", ImGuiDir_Up))
-            move_out = -1;
-        ImGui::SameLine();
-        if (ImGui::ArrowButton("##down", ImGuiDir_Down))
-            move_out = 1;
-        ImGui::SameLine();
-        if (ImGui::SmallButton("x"))
-            erase_out = 1;
-        if (cur_type == "if") {
+        ImGui::PopStyleColor(3);
+    } else {
+        ImGui::TextColored(header_col, "unknown");
+    }
+    ImGui::SameLine();
+    const float fh = ImGui::GetFrameHeight();
+    const float sp = ImGui::GetStyle().ItemSpacing.x;
+    const float xw = ImGui::CalcTextSize("x").x +
+                     2.0f * ImGui::GetStyle().FramePadding.x;
+    float drag_w = ImGui::GetContentRegionAvail().x -
+                   (2.0f * (fh + sp) + (xw + sp));
+    if (drag_w < 24.0f)
+        drag_w = 24.0f;
+    ImGui::InvisibleButton("##drag",
+                           ImVec2(drag_w, ImGui::GetTextLineHeight()));
+    HookDragSource("move\n" + hook_id + "\n" +
+                       HookEditor::PathToString(node_path),
+                   (cur_type + " block").c_str());
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Drag to move this block");
+    ImGui::SameLine();
+    if (ImGui::ArrowButton("##up", ImGuiDir_Up))
+        move_out = -1;
+    ImGui::SameLine();
+    if (ImGui::ArrowButton("##down", ImGuiDir_Down))
+        move_out = 1;
+    ImGui::SameLine();
+    if (ImGui::SmallButton("x"))
+        erase_out = 1;
+    if (!type_changed) {
+        if (!known) {
+            ImGui::TextDisabled("Unknown node type -- edit in Text mode:");
+            ImGui::TextWrapped("%s", node.dump(2).c_str());
+        } else if (cur_type == "if") {
             ImGui::Text("condition");
             std::string cond = node.value("condition", "1");
             if (InputTextBuf(st, "##condition", id + "/condition", cond)) {
@@ -1778,12 +2059,18 @@ inline void DrawHookNode(ConfiguratorState &st,
             }
             ImGui::Text("then:");
             ImGui::Indent();
-            DrawHookNodeList(st, periph, node["then"], id + "/then");
+            HookEditor::NodePath then_path = node_path;
+            then_path.push_back(HookEditor::PathSeg::Key("then"));
+            DrawHookNodeList(st, periph, node["then"], id + "/then",
+                             then_path, hook_id);
             ImGui::Unindent();
             if (node.contains("else")) {
                 ImGui::Text("else:");
                 ImGui::Indent();
-                DrawHookNodeList(st, periph, node["else"], id + "/else");
+                HookEditor::NodePath else_path = node_path;
+                else_path.push_back(HookEditor::PathSeg::Key("else"));
+                DrawHookNodeList(st, periph, node["else"], id + "/else",
+                                 else_path, hook_id);
                 ImGui::Unindent();
                 if (ImGui::SmallButton("Remove else branch")) {
                     node.erase("else");
@@ -1915,17 +2202,12 @@ inline void DrawHookNode(ConfiguratorState &st,
                 st.MarkDirty();
             }
         }
-        return;
     }
-    // Unknown node: still movable and removable.
-    if (ImGui::ArrowButton("##up", ImGuiDir_Up))
-        move_out = -1;
-    ImGui::SameLine();
-    if (ImGui::ArrowButton("##down", ImGuiDir_Down))
-        move_out = 1;
-    ImGui::SameLine();
-    if (ImGui::SmallButton("x"))
-        erase_out = 1;
+    ImGui::EndChild();
+    ImGui::PopStyleColor(2);
+    // The whole block is a drop target (see HookDropTarget).
+    HookDropTarget(st, hook_id, HookEditor::ParentPath(node_path),
+                   node_path.back().index, true);
 }
 
 

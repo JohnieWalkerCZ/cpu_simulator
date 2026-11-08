@@ -191,4 +191,235 @@ inline nlohmann::json CanonicalHook(const nlohmann::json &hook) {
     return out;
 }
 
+// ---------------------------------------------------------------------------
+// Node paths and drag-and-drop moves (the Scratch-style editor).
+//
+// A path addresses a node or a node list inside a hook array: a list of
+// segments, where a numeric segment is an index into a node list and a
+// "then"/"else" segment descends into an if node's child list. A path
+// ending in an index addresses a node ("1/then/0"); a path ending in a
+// key (or the empty path) addresses a list ("1/then", ""). Paths are
+// what the drag-and-drop payloads carry, so the move model lives here
+// and is unit-testable without a GUI.
+
+struct PathSeg {
+    bool is_index = true;
+    int index = 0;       // valid when is_index
+    std::string key;     // "then" or "else" when !is_index
+    static PathSeg Index(int i) {
+        PathSeg s;
+        s.is_index = true;
+        s.index = i;
+        return s;
+    }
+    static PathSeg Key(const std::string &k) {
+        PathSeg s;
+        s.is_index = false;
+        s.key = k;
+        return s;
+    }
+    bool operator==(const PathSeg &o) const {
+        return is_index == o.is_index && index == o.index && key == o.key;
+    }
+};
+
+using NodePath = std::vector<PathSeg>;
+
+// "1/then/0", "0", "" (the empty path is the hook's top-level list).
+inline std::string PathToString(const NodePath &path) {
+    std::string out;
+    for (size_t i = 0; i < path.size(); ++i) {
+        if (i > 0)
+            out += "/";
+        out += path[i].is_index ? std::to_string(path[i].index)
+                                : path[i].key;
+    }
+    return out;
+}
+
+// Inverse of PathToString; false (and `path` untouched) on any segment
+// that is neither a non-negative integer nor "then"/"else".
+inline bool ParsePath(const std::string &text, NodePath &path) {
+    NodePath parsed;
+    if (text.empty()) {
+        path.clear(); // the empty path is the top-level list
+        return true;
+    }
+    size_t start = 0;
+    while (true) {
+        const size_t slash = text.find('/', start);
+        const std::string seg = text.substr(
+            start, slash == std::string::npos ? std::string::npos
+                                              : slash - start);
+        if (seg == "then" || seg == "else") {
+            parsed.push_back(PathSeg::Key(seg));
+        } else if (!seg.empty() &&
+                   std::all_of(seg.begin(), seg.end(), [](char c) {
+                       return c >= '0' && c <= '9';
+                   })) {
+            parsed.push_back(PathSeg::Index(std::stoi(seg)));
+        } else {
+            return false;
+        }
+        if (slash == std::string::npos)
+            break;
+        start = slash + 1;
+    }
+    path = parsed;
+    return true;
+}
+
+// The parent path (everything but the last segment); the empty path's
+// parent is itself.
+inline NodePath ParentPath(const NodePath &path) {
+    if (path.empty())
+        return path;
+    return NodePath(path.begin(), path.end() - 1);
+}
+
+// Whether `prefix` is a prefix of `path` (a path is a prefix of
+// itself).
+inline bool IsPrefix(const NodePath &prefix, const NodePath &path) {
+    if (prefix.size() > path.size())
+        return false;
+    for (size_t i = 0; i < prefix.size(); ++i)
+        if (!(prefix[i] == path[i]))
+            return false;
+    return true;
+}
+
+namespace detail {
+
+template <typename Json>
+Json *FindNodeImpl(Json &hook, const NodePath &path) {
+    // Walk alternating list -> node -> child list; `node` is the node
+    // addressed so far (null while standing on a list).
+    Json *list = &hook;
+    Json *node = nullptr;
+    for (const auto &seg : path) {
+        if (seg.is_index) {
+            if (list == nullptr || !list->is_array() || seg.index < 0 ||
+                seg.index >= static_cast<int>(list->size()))
+                return nullptr;
+            node = &(*list)[static_cast<size_t>(seg.index)];
+        } else {
+            if (node == nullptr || !node->is_object() ||
+                !node->contains(seg.key) || !(*node)[seg.key].is_array())
+                return nullptr;
+            list = &(*node)[seg.key];
+            node = nullptr;
+        }
+    }
+    return node; // null when the path addresses a list (or is empty)
+}
+
+template <typename Json>
+Json *FindListImpl(Json &hook, const NodePath &list_path) {
+    if (list_path.empty())
+        return hook.is_array() ? &hook : nullptr;
+    if (list_path.back().is_index)
+        return nullptr; // a list path ends in a key, never an index
+    Json *node = FindNodeImpl(hook, ParentPath(list_path));
+    if (node == nullptr)
+        return nullptr;
+    Json &arr = (*node)[list_path.back().key];
+    return arr.is_array() ? &arr : nullptr;
+}
+
+} // namespace detail
+
+inline const nlohmann::json *FindNode(const nlohmann::json &hook,
+                                      const NodePath &path) {
+    return detail::FindNodeImpl(hook, path);
+}
+
+inline nlohmann::json *FindNode(nlohmann::json &hook,
+                                const NodePath &path) {
+    return detail::FindNodeImpl(hook, path);
+}
+
+// The node list addressed by `list_path` (the empty path is the hook
+// itself); null when the path does not address a list.
+inline const nlohmann::json *FindList(const nlohmann::json &hook,
+                                      const NodePath &list_path) {
+    return detail::FindListImpl(hook, list_path);
+}
+
+inline nlohmann::json *FindList(nlohmann::json &hook,
+                                const NodePath &list_path) {
+    return detail::FindListImpl(hook, list_path);
+}
+
+// Whether moving the node at `from` into the list at `to_list` would
+// put the node inside itself (or into one of its own child lists).
+// Such a drop is refused by MoveNode and must not be offered by the
+// editor either.
+inline bool MoveIsSelfTarget(const NodePath &from,
+                             const NodePath &to_list) {
+    NodePath owner = to_list;
+    if (!owner.empty() && !owner.back().is_index)
+        owner.pop_back();
+    return IsPrefix(from, owner);
+}
+
+// Move the node at `from` to position `to_index` in the list at
+// `to_list` (indices clamp to the list, so an index past the end
+// appends). `to_index` is a position in the list as the user sees it
+// before the move -- dropping a block after the item at index i passes
+// i+1 -- so moving within one list adjusts for the removal. Returns
+// false (hook untouched) for an invalid source or target, or for a
+// move into the node's own descendant.
+inline bool MoveNode(nlohmann::json &hook, const NodePath &from,
+                     const NodePath &to_list, int to_index) {
+    if (from.empty() || !from.back().is_index)
+        return false;
+    if (MoveIsSelfTarget(from, to_list))
+        return false;
+    nlohmann::json *src_list = FindList(hook, ParentPath(from));
+    nlohmann::json *dst_list = FindList(hook, to_list);
+    if (src_list == nullptr || dst_list == nullptr)
+        return false;
+    const int from_index = from.back().index;
+    if (from_index < 0 ||
+        from_index >= static_cast<int>(src_list->size()))
+        return false;
+    nlohmann::json node = (*src_list)[static_cast<size_t>(from_index)];
+    src_list->erase(src_list->begin() + from_index);
+    if (src_list == dst_list && to_index > from_index)
+        --to_index;
+    to_index =
+        std::clamp(to_index, 0, static_cast<int>(dst_list->size()));
+    dst_list->insert(dst_list->begin() + to_index, node);
+    return true;
+}
+
+// Insert a copy of `node` at `to_index` in the list at `to_list`
+// (clamped, so past the end appends). False when the list path is
+// invalid.
+inline bool InsertNode(nlohmann::json &hook, const NodePath &to_list,
+                       int to_index, const nlohmann::json &node) {
+    nlohmann::json *dst_list = FindList(hook, to_list);
+    if (dst_list == nullptr)
+        return false;
+    to_index =
+        std::clamp(to_index, 0, static_cast<int>(dst_list->size()));
+    dst_list->insert(dst_list->begin() + to_index, node);
+    return true;
+}
+
+// Erase the node at `path`; false (hook untouched) for an invalid
+// path.
+inline bool RemoveNode(nlohmann::json &hook, const NodePath &path) {
+    if (path.empty() || !path.back().is_index)
+        return false;
+    nlohmann::json *list = FindList(hook, ParentPath(path));
+    if (list == nullptr)
+        return false;
+    const int idx = path.back().index;
+    if (idx < 0 || idx >= static_cast<int>(list->size()))
+        return false;
+    list->erase(list->begin() + idx);
+    return true;
+}
+
 } // namespace HookEditor

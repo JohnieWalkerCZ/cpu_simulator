@@ -244,13 +244,17 @@ for you:
   sub-register starts at the first free bit.
 * **Peripheral hook blocks:** each `on_read`, `on_write` and
   `tick_behavior` hook has a Blocks/Text toggle (default Blocks).
-  Blocks view shows the AST as node blocks -- `if` with a condition
-  field and nested then/else lists, `assign` with a target combo and
-  an expression field, `call` with a function combo and one field per
-  argument -- with move, remove and "+ Add node" controls. Text view
-  is the pretty-printed JSON box; both edit the same JSON.
-  Parameters, internal state and registers stay as text forms.
-  Multiline text boxes are taller throughout.
+  Blocks view is a Scratch-style editor: coloured, rounded blocks
+  (orange `if`, blue `assign`, green `call`) with their fields
+  inline; `if` blocks are C-shaped, with their then/else lists
+  nested inside. Drag a block by its header to move it between
+  lists (a yellow insertion line shows the drop position), or drag
+  a type in from the palette at the top of the hook editor; click a
+  palette button to append a node. Move, remove and "+ Add node"
+  controls stay as fallbacks. Text view is the pretty-printed JSON
+  box; both edit the same JSON. Parameters, internal state and
+  registers stay as text forms. Multiline text boxes are taller
+  throughout.
 * **Problems:** under the selected instruction's preview, a Problems
   list shows everything wrong with that instruction, each as a problem
   line followed by a concrete fix naming the field and value to change
