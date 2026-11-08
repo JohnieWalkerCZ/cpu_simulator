@@ -16,16 +16,15 @@
 #include "app_launcher.hpp"
 #include "config_diagnostics.hpp"
 #include "core/config.hpp"
+#include "hook_editor.hpp"
 #include "instruction_preview.hpp"
 #include "microop_editor.hpp"
 #include "register_layout.hpp"
 #include "ui_common.hpp"
 #include <algorithm>
 #include <cctype>
-#include <cstdio>
 #include <fstream>
 #include <functional>
-#include <limits>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <unordered_map>
@@ -286,10 +285,12 @@ struct ConfiguratorState {
     int sel_peripheral = 0;
     int sel_periph_reg = 0;
 
-    // Peripheral indices shown in text mode; the rest use the graphical
-    // blocks view (default). Indices shift when a peripheral is removed,
-    // which only ever flips a view back to blocks.
-    std::unordered_set<int> periph_text_view;
+    // Hook ids shown in text mode; the rest use the graphical blocks
+    // view (default). A hook id is the peripheral/register path of the
+    // hook ("per/0/tick", "per/1/preg/0/on_write"). Indices shift when
+    // a peripheral or register is removed, which only ever flips a view
+    // back to blocks.
+    std::unordered_set<std::string> hook_text_view;
 
     void MarkDirty() {
         dirty = true;
@@ -1616,213 +1617,317 @@ inline void DrawInstructionsTab(ConfiguratorState &st) {
 
 namespace ConfiguratorDetail {
 
-// Parse a word-sized JSON value (number, or "0x.."/"0b.."/decimal
-// string) into an unsigned 64-bit value. False when it cannot be
-// read as a non-negative address/size.
-inline bool WordValue(const nlohmann::json &v, unsigned long long &out) {
-    try {
-        if (v.is_number_unsigned()) {
-            out = v.get<unsigned long long>();
-            return true;
-        }
-        if (v.is_number_integer() && v.get<long long>() >= 0) {
-            out = static_cast<unsigned long long>(v.get<long long>());
-            return true;
-        }
-        if (v.is_string()) {
-            const word_t w = parse_word(v.get<std::string>());
-            if (w < 0 ||
-                w > static_cast<word_t>(
-                        std::numeric_limits<unsigned long long>::max()))
-                return false;
-            out = static_cast<unsigned long long>(w);
-            return true;
-        }
-    } catch (...) {
-        return false;
-    }
-    return false;
-}
+// Graphical block editor for one peripheral hook (on_read, on_write or
+// tick_behavior): a JSON array of AST nodes. Each hook has its own
+// Blocks/Text toggle (default Blocks). Text view is the existing
+// EditJsonRaw pretty-printed box; if the typed text does not parse,
+// the text is kept, the error is shown, and Blocks stays disabled
+// until the JSON parses again. A node with an unknown type is
+// preserved as-is and shown greyed-out with a hint to use Text mode.
 
-// Horizontal bar showing a peripheral's address range against the
-// whole memory size.
-inline void DrawAddressBar(ConfiguratorState &st, nlohmann::json &p) {
-    unsigned long long start = 0, end = 0, total = 0;
-    bool have_range = false;
-    if (p.contains("address")) {
-        have_range = WordValue(p["address"], start);
-        end = start;
-    } else if (p.contains("address_start") &&
-               p.contains("address_end")) {
-        have_range = WordValue(p["address_start"], start) &&
-                     WordValue(p["address_end"], end);
+inline void DrawHookNodeList(ConfiguratorState &st,
+                             const nlohmann::json &periph,
+                             nlohmann::json &nodes, const std::string &id);
+inline void DrawHookNode(ConfiguratorState &st,
+                         const nlohmann::json &periph, nlohmann::json &node,
+                         const std::string &id, int &erase_out,
+                         int &move_out);
+
+// One hook: Blocks/Text toggle, a hint about the `value` context
+// variable, then either the node blocks or the raw JSON box.
+inline void DrawHookEditor(ConfiguratorState &st,
+                           const nlohmann::json &periph, nlohmann::json &obj,
+                           const char *key, const std::string &id,
+                           const char *value_hint) {
+    ImGui::Text("%s (optional):", key);
+    const bool bad_json = st.text_no_resync.count(id) > 0;
+    const bool not_array = obj.contains(key) && !obj[key].is_array();
+    const bool forced_text = bad_json || not_array;
+    const bool text_view =
+        forced_text || st.hook_text_view.count(id) > 0;
+    if (forced_text)
+        ImGui::BeginDisabled();
+    if (ImGui::SmallButton(text_view ? "Blocks" : "Text")) {
+        if (st.hook_text_view.count(id))
+            st.hook_text_view.erase(id);
+        else
+            st.hook_text_view.insert(id);
     }
-    const nlohmann::json &doc = st.doc;
-    const bool have_total =
-        doc.contains("memory") && doc["memory"].is_object() &&
-        doc["memory"].contains("size") &&
-        WordValue(doc["memory"]["size"], total);
-    if (!have_range || !have_total || total == 0 || end < start) {
-        ImGui::TextDisabled("Address range bar unavailable: set the "
-                            "address range and the memory size first.");
+    if (forced_text)
+        ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled(
+        text_view ? "Text view: the hook as pretty-printed JSON."
+                  : "Blocks view: the hook as AST node blocks.");
+    ImGui::TextDisabled("%s", value_hint);
+    if (text_view) {
+        if (bad_json)
+            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f),
+                               "Blocks view is disabled until this JSON "
+                               "parses again.");
+        if (not_array)
+            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f),
+                               "A hook must be a JSON array of nodes.");
+        EditJsonRaw(st, ("##" + std::string(key)).c_str(), obj, key, id);
         return;
     }
-    const float bar_h = ImGui::GetTextLineHeight() * 1.2f;
-    const float bar_w = ImGui::GetContentRegionAvail().x;
-    const ImVec2 pos = ImGui::GetCursorScreenPos();
-    ImDrawList *dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(pos, ImVec2(pos.x + bar_w, pos.y + bar_h),
-                      IM_COL32(90, 90, 90, 255));
-    const float x0 = pos.x + bar_w * static_cast<float>(
-                                     static_cast<double>(start) /
-                                     static_cast<double>(total));
-    const float x1 = pos.x + bar_w * static_cast<float>(
-                                     static_cast<double>(end + 1) /
-                                     static_cast<double>(total));
-    dl->AddRectFilled(ImVec2(x0, pos.y + 1),
-                      ImVec2(std::min(x1, pos.x + bar_w), pos.y + bar_h - 1),
-                      IM_COL32(66, 135, 245, 255));
-    dl->AddRect(pos, ImVec2(pos.x + bar_w, pos.y + bar_h),
-                IM_COL32(200, 200, 200, 255));
-    ImGui::Dummy(ImVec2(bar_w, bar_h));
-    char caption[128];
-    std::snprintf(caption, sizeof(caption),
-                  "Address range: 0x%llX..0x%llX of 0x%llX (%llu bytes)",
-                  start, end, total, end - start + 1);
-    ImGui::TextDisabled("%s", caption);
-}
-
-// Edit a string->string (or string->number) JSON object as editable
-// key/value row blocks: one key field and one value field per row,
-// a remove button, and "+ Add row". This is the blocks view of what
-// the text view edits as "key = value" lines; both edit the same
-// JSON object, so switching views loses nothing.
-inline void DrawKeyValueRows(ConfiguratorState &st, nlohmann::json &obj,
-                             const char *key, const std::string &id,
-                             bool numeric_values) {
-    if (!obj.contains(key) || !obj[key].is_object())
-        obj[key] = nlohmann::json::object();
-    nlohmann::json &map = obj[key];
-    std::vector<std::string> keys;
-    for (auto it = map.begin(); it != map.end(); ++it)
-        keys.push_back(it.key());
-    std::string rename_from, rename_to, erase_key;
-    for (size_t i = 0; i < keys.size(); ++i) {
-        ImGui::PushID(static_cast<int>(i));
-        const std::string old_key = keys[i];
-        std::string k = old_key;
-        std::string v = JsonScalarToString(map[old_key]);
-        const float avail = ImGui::GetContentRegionAvail().x;
-        ImGui::SetNextItemWidth(avail * 0.35f);
-        if (InputTextBuf(st, "##k", id + "/k/" + std::to_string(i), k)) {
-            rename_from = old_key;
-            rename_to = k;
-        }
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(avail * 0.45f);
-        if (InputTextBuf(st, "##v", id + "/v/" + std::to_string(i), v)) {
-            if (numeric_values) {
-                nlohmann::json slot = 0;
-                CommitWordText(slot, v);
-                map[old_key] = slot;
-            } else {
-                map[old_key] = v;
-            }
-            st.MarkDirty();
-        }
-        ImGui::SameLine();
-        if (ImGui::SmallButton("x"))
-            erase_key = old_key;
-        ImGui::PopID();
-    }
-    if (!erase_key.empty()) {
-        map.erase(erase_key);
-        st.ClearTextBufs();
-        st.MarkDirty();
-    }
-    if (!rename_from.empty() && rename_from != rename_to) {
-        if (!rename_to.empty() && !map.contains(rename_to)) {
-            map[rename_to] = map[rename_from];
-            map.erase(rename_from);
+    if (!obj.contains(key)) {
+        ImGui::TextDisabled("No nodes yet.");
+        if (ImGui::SmallButton("+ Add node")) {
+            obj[key] = nlohmann::json::array(
+                {HookEditor::DefaultNode(
+                    "assign", HookEditor::AvailableTargets(periph))});
             st.ClearTextBufs();
             st.MarkDirty();
-        } else {
-            st.action_msg =
-                "Key \"" + rename_to + "\" already exists.";
+        }
+        return;
+    }
+    DrawHookNodeList(st, periph, obj[key], id);
+}
+
+// A vertical list of node blocks, each with move-up / move-down /
+// remove, plus a "+ Add node" button (new node defaults to assign).
+inline void DrawHookNodeList(ConfiguratorState &st,
+                             const nlohmann::json &periph,
+                             nlohmann::json &nodes, const std::string &id) {
+    int erase_idx = -1, move_idx = -1, move_dir = 0;
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        nlohmann::json &node = nodes[i];
+        ImGui::PushID(static_cast<int>(i));
+        int erase = 0, move = 0;
+        DrawHookNode(st, periph, node, id + "/" + std::to_string(i),
+                     erase, move);
+        if (erase)
+            erase_idx = static_cast<int>(i);
+        if (move != 0) {
+            move_idx = static_cast<int>(i);
+            move_dir = move;
+        }
+        ImGui::PopID();
+        if (i + 1 < nodes.size())
+            ImGui::Separator();
+    }
+    if (erase_idx >= 0) {
+        nodes.erase(nodes.begin() + erase_idx);
+        st.ClearTextBufs();
+        st.MarkDirty();
+    } else if (move_idx >= 0) {
+        const int j = move_idx + move_dir;
+        if (j >= 0 && j < static_cast<int>(nodes.size())) {
+            std::swap(nodes[move_idx], nodes[j]);
+            st.ClearTextBufs();
+            st.MarkDirty();
         }
     }
-    if (ImGui::SmallButton("+ Add row")) {
-        std::string fresh = "new_key";
-        for (int n = 2; map.contains(fresh); ++n)
-            fresh = "new_key_" + std::to_string(n);
-        map[fresh] = numeric_values ? nlohmann::json(0) : nlohmann::json("");
+    if (ImGui::SmallButton("+ Add node")) {
+        nodes.push_back(HookEditor::DefaultNode(
+            "assign", HookEditor::AvailableTargets(periph)));
         st.ClearTextBufs();
         st.MarkDirty();
     }
 }
 
-// Peripheral registers as an editable table: one row per register
-// (name / offset / size / access / initial), a radio button to select
-// the row (its on_read/on_write hooks show below), and a remove
-// button. This is the blocks view; the text view keeps the
-// list + editor form.
-inline void DrawPeripheralRegisterTable(ConfiguratorState &st,
-                                        nlohmann::json &p,
-                                        const std::string &base) {
-    if (!p.contains("registers") || !p["registers"].is_array())
-        p["registers"] = nlohmann::json::array();
-    nlohmann::json &regs = p["registers"];
-    ImGui::TextDisabled("name | offset | size (bytes) | access | initial");
-    int erase_reg = -1;
-    for (size_t i = 0; i < regs.size(); ++i) {
-        nlohmann::json &r = regs[i];
-        const std::string rbase =
-            base + "/preg/" + std::to_string(i);
-        ImGui::PushID(static_cast<int>(i));
-        if (ImGui::RadioButton("##sel", &st.sel_periph_reg,
-                               static_cast<int>(i)))
+// One node block: a type combo (changing it drops fields that do not
+// belong to the new type and prefills the required ones), then exactly
+// the fields that type needs. Move-up / move-down / remove buttons sit
+// on the type row.
+inline void DrawHookNode(ConfiguratorState &st,
+                         const nlohmann::json &periph, nlohmann::json &node,
+                         const std::string &id, int &erase_out,
+                         int &move_out) {
+    erase_out = 0;
+    move_out = 0;
+    if (!HookEditor::IsRepresentable(node)) {
+        ImGui::TextDisabled("Unknown node type -- edit in Text mode:");
+        ImGui::TextWrapped("%s", node.dump(2).c_str());
+    } else {
+        const std::string cur_type = node.value("type", "assign");
+        const std::vector<std::string> types = HookEditor::NodeTypes();
+        int idx = 1; // assign
+        for (int i = 0; i < static_cast<int>(types.size()); ++i)
+            if (types[i] == cur_type)
+                idx = i;
+        std::vector<const char *> citems;
+        for (const auto &t : types)
+            citems.push_back(t.c_str());
+        ImGui::Text("Node type");
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.5f);
+        if (ImGui::Combo("##type", &idx, citems.data(),
+                         static_cast<int>(citems.size()))) {
+            node = HookEditor::DefaultNode(
+                types[idx], HookEditor::AvailableTargets(periph));
+            st.ClearTextBufs();
             st.MarkDirty();
-        ImGui::SameLine();
-        const float avail = ImGui::GetContentRegionAvail().x;
-        ImGui::SetNextItemWidth(avail * 0.32f);
-        EditJsonString(st, "##rname", r, "name", rbase + "/name");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(avail * 0.14f);
-        EditJsonInt(st, "##roff", r, "offset", 0, 0, 1000000);
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(avail * 0.12f);
-        EditJsonInt(st, "##rsize", r, "size_bytes", 1, 1, 16);
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(avail * 0.13f);
-        {
-            static const char *acc[] = {"r", "w", "rw"};
-            EditJsonCombo(st, "##racc", r, "access", acc, 3, "rw");
+            return;
         }
         ImGui::SameLine();
-        ImGui::SetNextItemWidth(avail * 0.18f);
-        EditJsonWordText(st, "##rinit", r, "initial", rbase + "/initial");
+        if (ImGui::ArrowButton("##up", ImGuiDir_Up))
+            move_out = -1;
+        ImGui::SameLine();
+        if (ImGui::ArrowButton("##down", ImGuiDir_Down))
+            move_out = 1;
         ImGui::SameLine();
         if (ImGui::SmallButton("x"))
-            erase_reg = static_cast<int>(i);
-        ImGui::PopID();
+            erase_out = 1;
+        if (cur_type == "if") {
+            ImGui::Text("condition");
+            std::string cond = node.value("condition", "1");
+            if (InputTextBuf(st, "##condition", id + "/condition", cond)) {
+                node["condition"] = cond;
+                st.MarkDirty();
+            }
+            ImGui::Text("then:");
+            ImGui::Indent();
+            DrawHookNodeList(st, periph, node["then"], id + "/then");
+            ImGui::Unindent();
+            if (node.contains("else")) {
+                ImGui::Text("else:");
+                ImGui::Indent();
+                DrawHookNodeList(st, periph, node["else"], id + "/else");
+                ImGui::Unindent();
+                if (ImGui::SmallButton("Remove else branch")) {
+                    node.erase("else");
+                    st.ClearTextBufs();
+                    st.MarkDirty();
+                }
+            } else if (ImGui::SmallButton("+ Add else branch")) {
+                node["else"] = nlohmann::json::array();
+                st.ClearTextBufs();
+                st.MarkDirty();
+            }
+        } else if (cur_type == "assign") {
+            const std::vector<std::string> options =
+                HookEditor::AvailableTargets(periph);
+            std::vector<std::string> items = options;
+            items.push_back("Custom...");
+            const std::string cur = node.value("target", "");
+            int tidx = static_cast<int>(items.size()) - 1;
+            for (int i = 0; i < static_cast<int>(options.size()); ++i)
+                if (options[i] == cur)
+                    tidx = i;
+            std::vector<const char *> titems;
+            for (const auto &s : items)
+                titems.push_back(s.c_str());
+            ImGui::Text("target");
+            if (ImGui::Combo("##target", &tidx, titems.data(),
+                             static_cast<int>(titems.size()))) {
+                node["target"] =
+                    tidx < static_cast<int>(options.size())
+                        ? options[tidx]
+                        : "";
+                st.MarkDirty();
+            }
+            if (std::find(options.begin(), options.end(), cur) ==
+                options.end()) {
+                ImGui::Text("Custom value");
+                std::string v = cur;
+                if (InputTextBuf(st, "##target_custom",
+                                 id + "/target_custom", v)) {
+                    node["target"] = v;
+                    st.MarkDirty();
+                }
+            }
+            ImGui::Text("expr");
+            std::string expr = node.value("expr", "0");
+            if (InputTextBuf(st, "##expr", id + "/expr", expr)) {
+                node["expr"] = expr;
+                st.MarkDirty();
+            }
+        } else if (cur_type == "call") {
+            const std::vector<std::string> funcs = HookEditor::CallFuncs();
+            const std::string cur = node.value("func", "trigger_interrupt");
+            int fidx = static_cast<int>(funcs.size()); // Custom...
+            for (int i = 0; i < static_cast<int>(funcs.size()); ++i)
+                if (funcs[i] == cur)
+                    fidx = i;
+            std::vector<std::string> items = funcs;
+            items.push_back("Custom...");
+            std::vector<const char *> fitems;
+            for (const auto &s : items)
+                fitems.push_back(s.c_str());
+            ImGui::Text("func");
+            if (ImGui::Combo("##func", &fidx, fitems.data(),
+                             static_cast<int>(fitems.size()))) {
+                const std::string next =
+                    fidx < static_cast<int>(funcs.size()) ? funcs[fidx]
+                                                          : "";
+                node["func"] = next;
+                // Pad the arguments to the new function's arity;
+                // extras stay.
+                const int arity = HookEditor::CallFuncArity(next);
+                if (arity >= 0) {
+                    if (!node.contains("args") ||
+                        !node["args"].is_array())
+                        node["args"] = nlohmann::json::array();
+                    while (static_cast<int>(node["args"].size()) < arity)
+                        node["args"].push_back("0");
+                }
+                st.MarkDirty();
+            }
+            if (std::find(funcs.begin(), funcs.end(), cur) ==
+                funcs.end()) {
+                ImGui::Text("Custom value");
+                std::string v = cur;
+                if (InputTextBuf(st, "##func_custom", id + "/func_custom",
+                                 v)) {
+                    node["func"] = v;
+                    st.MarkDirty();
+                }
+            }
+            const int arity =
+                HookEditor::CallFuncArity(node.value("func", ""));
+            if (arity >= 0)
+                ImGui::TextDisabled("%s expects %d argument(s).",
+                                    node.value("func", "").c_str(), arity);
+            ImGui::Text("args:");
+            const size_t nargs =
+                (node.contains("args") && node["args"].is_array())
+                    ? node["args"].size()
+                    : 0;
+            int erase_arg = -1;
+            for (size_t j = 0; j < nargs; ++j) {
+                ImGui::PushID(static_cast<int>(j));
+                std::string a =
+                    node["args"][j].is_string()
+                        ? node["args"][j].get<std::string>()
+                        : "";
+                if (InputTextBuf(st, "##arg",
+                                 id + "/args/" + std::to_string(j), a)) {
+                    node["args"][j] = a;
+                    st.MarkDirty();
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("x"))
+                    erase_arg = static_cast<int>(j);
+                ImGui::PopID();
+            }
+            if (erase_arg >= 0) {
+                node["args"].erase(node["args"].begin() + erase_arg);
+                st.ClearTextBufs();
+                st.MarkDirty();
+            }
+            if (ImGui::SmallButton("+ Add argument")) {
+                if (!node.contains("args") || !node["args"].is_array())
+                    node["args"] = nlohmann::json::array({"0"});
+                else
+                    node["args"].push_back("0");
+                st.ClearTextBufs();
+                st.MarkDirty();
+            }
+        }
+        return;
     }
-    if (erase_reg >= 0) {
-        regs.erase(regs.begin() + erase_reg);
-        st.sel_periph_reg = 0;
-        st.ClearTextBufs();
-        st.MarkDirty();
-    }
-    if (ImGui::SmallButton("+ Add register")) {
-        regs.push_back({{"name", "REG"},
-                        {"offset", 0},
-                        {"size_bytes", 1},
-                        {"access", "rw"},
-                        {"initial", 0}});
-        st.sel_periph_reg = static_cast<int>(regs.size()) - 1;
-        st.ClearTextBufs();
-        st.MarkDirty();
-    }
+    // Unknown node: still movable and removable.
+    if (ImGui::ArrowButton("##up", ImGuiDir_Up))
+        move_out = -1;
+    ImGui::SameLine();
+    if (ImGui::ArrowButton("##down", ImGuiDir_Down))
+        move_out = 1;
+    ImGui::SameLine();
+    if (ImGui::SmallButton("x"))
+        erase_out = 1;
 }
+
 
 inline void DrawPeripheralsTab(ConfiguratorState &st) {
     nlohmann::json &doc = st.doc;
@@ -1869,47 +1974,19 @@ inline void DrawPeripheralsTab(ConfiguratorState &st) {
             EditJsonWordText(st, "Address end", p, "address_end",
                              base + "/address_end");
         }
-        // Blocks/Text toggle. Both views edit the same JSON, so
-        // switching translates both ways with no data loss.
-        const bool text_view =
-            st.periph_text_view.count(st.sel_peripheral) > 0;
-        if (ImGui::SmallButton(text_view ? "Blocks" : "Text")) {
-            if (text_view)
-                st.periph_text_view.erase(st.sel_peripheral);
-            else
-                st.periph_text_view.insert(st.sel_peripheral);
-        }
-        ImGui::SameLine();
-        ImGui::TextDisabled(
-            text_view
-                ? "Text view: parameters and state as key = value lines."
-                : "Blocks view: parameters, state and registers as "
-                  "editable blocks.");
+        ImGui::Text("Parameters (one per line, e.g. width = 8):");
+        EditJsonKeyValueLines(st, "##params", p, "parameters",
+                              base + "/parameters", false);
+        ImGui::Text("Internal state (one per line, e.g. COUNT = 0):");
+        EditJsonKeyValueLines(st, "##internal", p, "internal_state",
+                              base + "/internal_state", true);
+
+        ImGui::Separator();
+        ImGui::Text("Peripheral registers:");
         if (!p.contains("registers"))
             p["registers"] = nlohmann::json::array();
         nlohmann::json &regs = p["registers"];
-        if (!text_view) {
-            DrawAddressBar(st, p);
-            ImGui::Text("Parameters:");
-            DrawKeyValueRows(st, p, "parameters", base + "/parameters",
-                             false);
-            ImGui::Text("Internal state:");
-            DrawKeyValueRows(st, p, "internal_state",
-                             base + "/internal_state", true);
-            ImGui::Separator();
-            ImGui::Text("Registers:");
-            DrawPeripheralRegisterTable(st, p, base);
-        } else {
-            ImGui::Text("Parameters (one per line, e.g. width = 8):");
-            EditJsonKeyValueLines(st, "##params", p, "parameters",
-                                  base + "/parameters", false);
-            ImGui::Text("Internal state (one per line, e.g. COUNT = 0):");
-            EditJsonKeyValueLines(st, "##internal", p, "internal_state",
-                                  base + "/internal_state", true);
-
-            ImGui::Separator();
-            ImGui::Text("Peripheral registers:");
-            ImGui::BeginChild("preg_list", ImVec2(180, 150), true);
+        ImGui::BeginChild("preg_list", ImVec2(180, 150), true);
         for (size_t i = 0; i < regs.size(); ++i) {
             const std::string label = regs[i].value("name", "?") + "###preg" +
                                       std::to_string(i);
@@ -1954,22 +2031,21 @@ inline void DrawPeripheralsTab(ConfiguratorState &st) {
             ImGui::TextDisabled("No registers.");
         }
         ImGui::EndChild();
-        } // text view
 
         // AST hooks of the selected peripheral register.
         if (!regs.empty()) {
             nlohmann::json &r = regs[st.sel_periph_reg];
             const std::string rbase =
                 base + "/preg/" + std::to_string(st.sel_periph_reg);
-            ImGui::Text("on_read (AST JSON, optional):");
-            EditJsonRaw(st, "##onread", r, "on_read", rbase + "/on_read");
-            ImGui::Text("on_write (AST JSON, optional):");
-            EditJsonRaw(st, "##onwrite", r, "on_write", rbase + "/on_write");
+            DrawHookEditor(st, p, r, "on_read", rbase + "/on_read",
+                           "value = current register value");
+            DrawHookEditor(st, p, r, "on_write", rbase + "/on_write",
+                           "value = written value");
         }
 
         ImGui::Separator();
-        ImGui::Text("tick_behavior (AST JSON, optional):");
-        EditJsonRaw(st, "##tick", p, "tick_behavior", base + "/tick");
+        DrawHookEditor(st, p, p, "tick_behavior", base + "/tick",
+                       "no context value in tick_behavior");
         ImGui::Separator();
         if (ImGui::Button("Remove this peripheral")) {
             periphs.erase(periphs.begin() + st.sel_peripheral);

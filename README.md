@@ -204,7 +204,7 @@ for you:
 * **Tabs:** System, Registers (including recursive sub-registers with
   offset or mask slicing), Memory, ALU (flags and operations, including the
   `program` mini-language), Instructions (encoding and microcode),
-  Problems, Peripherals (including raw-JSON AST hooks), and a raw JSON
+  Problems, Peripherals (including graphical AST hook blocks), and a raw JSON
   view/edit tab.
 * **Validation:** the edited document is validated live with the same
   `Config::from_json()` + `validate()` rules the simulator uses. The
@@ -242,11 +242,15 @@ for you:
   they sit inside it (bit 0 on the right, grey where nothing is
   covered, red where two sub-registers overlap), and a new
   sub-register starts at the first free bit.
-* **Peripheral blocks:** peripherals have a Blocks/Text toggle. Blocks
-  view shows the type, an address-range bar against the memory size,
-  parameters and internal state as editable key/value rows, and the
-  registers as a table; Text view keeps the `key = value` boxes. Both
-  edit the same JSON. Multiline text boxes are taller throughout.
+* **Peripheral hook blocks:** each `on_read`, `on_write` and
+  `tick_behavior` hook has a Blocks/Text toggle (default Blocks).
+  Blocks view shows the AST as node blocks -- `if` with a condition
+  field and nested then/else lists, `assign` with a target combo and
+  an expression field, `call` with a function combo and one field per
+  argument -- with move, remove and "+ Add node" controls. Text view
+  is the pretty-printed JSON box; both edit the same JSON.
+  Parameters, internal state and registers stay as text forms.
+  Multiline text boxes are taller throughout.
 * **Problems:** under the selected instruction's preview, a Problems
   list shows everything wrong with that instruction, each as a problem
   line followed by a concrete fix naming the field and value to change

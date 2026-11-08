@@ -172,3 +172,10 @@ add_executable(test_register_layout
 target_link_libraries(test_register_layout PRIVATE cpu_core)
 add_test(NAME test_register_layout COMMAND test_register_layout)
 set_tests_properties(test_register_layout PROPERTIES WORKING_DIRECTORY "${TEST_WORKING_DIR}")
+
+add_executable(test_hook_editor
+    tests/test_hook_editor.cpp
+)
+target_link_libraries(test_hook_editor PRIVATE cpu_core)
+add_test(NAME test_hook_editor COMMAND test_hook_editor)
+set_tests_properties(test_hook_editor PROPERTIES WORKING_DIRECTORY "${TEST_WORKING_DIR}")

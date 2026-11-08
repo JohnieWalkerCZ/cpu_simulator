@@ -30,6 +30,7 @@ TESTS=(
     "test_config_diagnostics"
     "test_microop_editor"
     "test_register_layout"
+    "test_hook_editor"
 )
 
 PASSED=0
