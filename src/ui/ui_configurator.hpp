@@ -14,18 +14,23 @@
 // Instructions, Problems, Peripherals and a raw JSON view.
 
 #include "app_launcher.hpp"
+#include "app_settings.hpp"
 #include "config_diagnostics.hpp"
 #include "core/config.hpp"
+#include "duplicate.hpp"
+#include "example_items.hpp"
 #include "hook_editor.hpp"
 #include "instruction_preview.hpp"
 #include "microop_editor.hpp"
 #include "register_layout.hpp"
 #include "ui_common.hpp"
+#include "undo_history.hpp"
 #include <algorithm>
 #include <cctype>
 #include <fstream>
 #include <functional>
 #include <nlohmann/json.hpp>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -266,6 +271,58 @@ struct ConfiguratorState {
     int doc_version = 0;
     int last_validated_version = -1;
 
+    // Undo/redo history (Group 1): snapshots of the whole document.
+    // The top snapshot always equals the current document.
+    UndoHistory history;
+
+    // Pending delete confirmation (Group 1): one shared modal for
+    // every Remove button. The pending delete is resolved when the
+    // user confirms, so list indices cannot go stale in between.
+    enum class DeleteKind {
+        None,
+        Instruction,
+        MicroOp,
+        Register,
+        SubRegister,
+        Segment,
+        Flag,
+        AluOp,
+        Peripheral,
+        PeriphReg,
+        HookNode,
+        HookArg,
+        HookElseBranch
+    };
+    DeleteKind pending_delete_kind = DeleteKind::None;
+    int pending_delete_index = -1; // list index for the pending delete
+    int pending_delete_group = -1; // register group (Register deletes)
+    std::string pending_delete_path; // register path (SubRegister deletes)
+    std::string pending_delete_hook_id; // hook id (hook deletes)
+    HookEditor::NodePath pending_delete_node_path; // node path (hook deletes)
+    std::string pending_delete_name; // shown in the modal
+
+    // Pending unsaved-changes confirmations (Group 1).
+    bool open_confirm_pending = false;
+    std::string pending_open_path; // empty = New template
+    bool quit_requested = false;   // SDL_QUIT seen while dirty
+    bool quit_confirmed = false;   // set by the quit modal; main loop reads
+
+    // Pending navigation from a clicked problem (Group 2): the tab to
+    // switch to, consumed by UI_Configurator on the next frame.
+    std::string goto_tab;
+
+    // List filters (Group 2): name substring, case-insensitive.
+    std::string filter_instructions;
+    std::string filter_registers;
+    std::string filter_alu;
+    std::string filter_peripherals;
+
+    // Active tab (Group 3, for Ctrl+D) and persistent UI settings
+    // (Group 3/5): recent files and the UI scale.
+    std::string active_tab = "System";
+    AppSettings settings;
+    std::string settings_path;
+
     // Text buffers keyed by a stable id (e.g. "reg:gp/0/name"). A buffer is
     // re-synced from the document whenever its source value changed and the
     // widget is not being edited; buffers flagged in no_resync keep
@@ -323,6 +380,9 @@ struct ConfiguratorState {
         dirty = false;
         ++doc_version;
         ClearTextBufs();
+        history.clear();
+        history.push(doc);
+        history.markSaved();
         action_msg = "Started with a blank template.";
     }
 
@@ -345,6 +405,13 @@ struct ConfiguratorState {
         dirty = false;
         ++doc_version;
         ClearTextBufs();
+        history.clear();
+        history.push(doc);
+        history.markSaved();
+        if (!settings_path.empty()) {
+            AddRecent(settings, file_path);
+            SaveSettings(settings_path, settings);
+        }
         action_msg = "Loaded " + file_path + ".";
         return true;
     }
@@ -362,6 +429,11 @@ struct ConfiguratorState {
         }
         path = file_path;
         dirty = false;
+        history.markSaved();
+        if (!settings_path.empty()) {
+            AddRecent(settings, file_path);
+            SaveSettings(settings_path, settings);
+        }
         action_msg = "Saved " + file_path + ".";
         return true;
     }
@@ -420,6 +492,26 @@ inline std::string &TextBuffer(ConfiguratorState &st, const std::string &key,
     return buf;
 }
 
+// Forward declarations: the Group 1-5 UI helpers are defined
+// before DrawTopBar, but the tab renderers below use them; the
+// field editors call PushUndoSnapshot when an edit commits.
+inline void PushUndoSnapshot(ConfiguratorState &st);
+inline void AskDelete(ConfiguratorState &st,
+                      ConfiguratorState::DeleteKind kind,
+                      const std::string &name, int index = -1,
+                      int group = -1, const std::string &path = "",
+                      const std::string &hook_id = "",
+                      const HookEditor::NodePath &node_path = {});
+inline bool DuplicateSelectedItem(ConfiguratorState &st);
+inline bool NameMatchesFilter(const std::string &name,
+                              const std::string &filter);
+inline void NavigateToIssue(ConfiguratorState &st,
+                            const ConfigDiagnostics::Issue &issue);
+inline void HelpMarker(const char *text);
+inline void InsertExamplePeripheral(ConfiguratorState &st);
+inline void InsertExampleHook(ConfiguratorState &st, nlohmann::json &obj,
+                              const char *key);
+
 inline bool InputTextBuf(ConfiguratorState &st, const char *label,
                          const std::string &key, std::string &value,
                          ImGuiInputTextFlags flags = 0) {
@@ -464,6 +556,10 @@ inline void EditJsonString(ConfiguratorState &st, const char *label,
             obj[key] = v;
         st.MarkDirty();
     }
+    // Text fields push once, when the edit commits (deactivation
+    // after a real change), never per keystroke.
+    if (ImGui::IsItemDeactivatedAfterEdit())
+        PushUndoSnapshot(st);
 }
 
 inline void EditJsonWordText(ConfiguratorState &st, const char *label,
@@ -474,23 +570,30 @@ inline void EditJsonWordText(ConfiguratorState &st, const char *label,
         CommitWordText(obj[key], v);
         st.MarkDirty();
     }
+    if (ImGui::IsItemDeactivatedAfterEdit())
+        PushUndoSnapshot(st);
 }
 
 inline void EditJsonInt(ConfiguratorState &st, const char *label,
                         nlohmann::json &obj, const char *key, int def,
-                        int lo, int hi) {
+                        int lo, int hi, bool push_undo = true) {
     int v = obj.value(key, def);
     if (ImGui::InputInt(label, &v)) {
         v = std::clamp(v, lo, hi);
         obj[key] = v;
         st.MarkDirty();
+        // Discrete widgets push right after the change (dedup makes
+        // no-change frames a no-op). Compound edits pass
+        // push_undo=false and push once after the whole change.
+        if (push_undo)
+            PushUndoSnapshot(st);
     }
 }
 
 inline void EditJsonCombo(ConfiguratorState &st, const char *label,
                           nlohmann::json &obj, const char *key,
                           const char *const *items, int count,
-                          const std::string &def) {
+                          const std::string &def, bool push_undo = true) {
     const std::string cur = obj.value(key, def);
     int idx = 0;
     for (int i = 0; i < count; ++i)
@@ -499,6 +602,8 @@ inline void EditJsonCombo(ConfiguratorState &st, const char *label,
     if (ImGui::Combo(label, &idx, items, count)) {
         obj[key] = items[idx];
         st.MarkDirty();
+        if (push_undo)
+            PushUndoSnapshot(st);
     }
 }
 
@@ -508,6 +613,7 @@ inline void EditJsonBool(ConfiguratorState &st, const char *label,
     if (ImGui::Checkbox(label, &b)) {
         obj[key] = b;
         st.MarkDirty();
+        PushUndoSnapshot(st);
     }
 }
 
@@ -545,6 +651,8 @@ inline void EditJsonKeyValueLines(ConfiguratorState &st, const char *label,
             obj[key] = rebuilt;
         st.MarkDirty();
     }
+    if (ImGui::IsItemDeactivatedAfterEdit())
+        PushUndoSnapshot(st);
 }
 
 // Edit an arbitrary JSON value (AST nodes for on_read/on_write/
@@ -566,6 +674,8 @@ inline void EditJsonRaw(ConfiguratorState &st, const char *label,
             st.text_no_resync.insert(id);
         }
     }
+    if (ImGui::IsItemDeactivatedAfterEdit())
+        PushUndoSnapshot(st);
 }
 
 } // namespace ConfiguratorDetail
@@ -591,6 +701,8 @@ inline void DrawSystemTab(ConfiguratorState &st) {
                              : doc["data_bus"].value("width", 8);
         EditJsonInt(st, "Opcode width", doc["instruction_set"],
                     "opcode_width", def_opcode, 1, 16);
+        HelpMarker("How many bits the opcode field takes in each "
+                   "instruction's encoding.");
         ImGui::SameLine();
         ImGui::TextDisabled("(instruction_set.opcode_width)");
     }
@@ -621,6 +733,7 @@ inline void DrawRegisterEditor(ConfiguratorState &st, nlohmann::json &reg,
             else
                 reg["role"] = roles[idx];
             st.MarkDirty();
+            PushUndoSnapshot(st);
         }
     }
     EditJsonBool(st, "Coprocessor register", reg, "coproc", false);
@@ -642,7 +755,11 @@ inline void DrawRegisterEditor(ConfiguratorState &st, nlohmann::json &reg,
                 reg["mask"] = "0b1";
             }
             st.MarkDirty();
+            PushUndoSnapshot(st);
         }
+        HelpMarker("Offset slices a fixed range of bits out of the "
+                   "parent register; mask picks individual bits with a "
+                   "bit pattern.");
         if (idx == 0)
             EditJsonInt(st, "Offset (bits)", reg, "offset", 0, 0, 127);
         else
@@ -652,7 +769,6 @@ inline void DrawRegisterEditor(ConfiguratorState &st, nlohmann::json &reg,
     if (reg.contains("sub_registers")) {
         ImGui::Separator();
         ImGui::Text("Sub-registers:");
-        int erase_child = -1;
         for (size_t i = 0; i < reg["sub_registers"].size(); ++i) {
             nlohmann::json &child = reg["sub_registers"][i];
             const std::string child_path =
@@ -662,18 +778,16 @@ inline void DrawRegisterEditor(ConfiguratorState &st, nlohmann::json &reg,
             if (ImGui::TreeNode(label.c_str())) {
                 DrawRegisterEditor(st, child, false, child_path, depth + 1);
                 if (ImGui::SmallButton("Remove this sub-register"))
-                    erase_child = static_cast<int>(i);
+                    AskDelete(
+                        st, ConfiguratorState::DeleteKind::SubRegister,
+                        child.value("name", "sub"), static_cast<int>(i),
+                        -1, path);
                 ImGui::TreePop();
             }
         }
-        if (erase_child >= 0) {
-            reg["sub_registers"].erase(
-                reg["sub_registers"].begin() + erase_child);
-            st.ClearTextBufs();
-            st.MarkDirty();
-            ImGui::PopID();
-            return;
-        }
+        // (Sub-register deletes go through the shared confirmation
+        // modal now; see AskDelete above. The actual erase happens in
+        // ApplyPendingDelete once the user confirms.)
     }
     // Bit bar: where the sub-registers sit inside this register.
     // Bit 0 is on the right, one block per used parent bit.
@@ -788,6 +902,7 @@ inline void DrawRegisterEditor(ConfiguratorState &st, nlohmann::json &reg,
             {{"name", "SUB"}, {"width", 1}, {"offset", off < 0 ? 0 : off}});
         st.ClearTextBufs();
         st.MarkDirty();
+        PushUndoSnapshot(st);
     }
     ImGui::PopID();
 }
@@ -801,10 +916,28 @@ inline void DrawRegistersTab(ConfiguratorState &st) {
     static const char *group_labels[] = {"General purpose", "Special"};
 
     ImGui::BeginChild("reg_list", ImVec2(230, 0), true);
+    size_t reg_shown = 0, reg_total = 0;
+    for (int g = 0; g < 2; ++g) {
+        const nlohmann::json &arr = doc["registers"][groups[g]];
+        reg_total += arr.size();
+        for (size_t i = 0; i < arr.size(); ++i)
+            if (NameMatchesFilter(arr[i].value("name", "?"),
+                                  st.filter_registers))
+                ++reg_shown;
+    }
+    ImGui::TextDisabled("Filter by name:");
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 70.0f);
+    InputTextBuf(st, "##filter_reg", "filter/registers",
+                 st.filter_registers);
+    ImGui::SameLine();
+    ImGui::Text("%zu of %zu", reg_shown, reg_total);
     for (int g = 0; g < 2; ++g) {
         ImGui::Text("%s:", group_labels[g]);
         nlohmann::json &arr = doc["registers"][groups[g]];
         for (size_t i = 0; i < arr.size(); ++i) {
+            if (!NameMatchesFilter(arr[i].value("name", "?"),
+                                   st.filter_registers))
+                continue;
             const std::string label =
                 arr[i].value("name", "?") + "###reg" + std::to_string(g) +
                 "_" + std::to_string(i);
@@ -828,6 +961,7 @@ inline void DrawRegistersTab(ConfiguratorState &st) {
             st.sel_register = static_cast<int>(arr.size()) - 1;
             st.ClearTextBufs();
             st.MarkDirty();
+            PushUndoSnapshot(st);
         }
     }
     ImGui::EndChild();
@@ -846,10 +980,12 @@ inline void DrawRegistersTab(ConfiguratorState &st) {
                            0);
         ImGui::Separator();
         if (ImGui::Button("Remove this register")) {
-            arr.erase(arr.begin() + st.sel_register);
-            st.sel_register = 0;
-            st.ClearTextBufs();
-            st.MarkDirty();
+            AskDelete(st, ConfiguratorState::DeleteKind::Register,
+                      reg.value("name", "?"), st.sel_register, st.sel_group);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Duplicate")) {
+            DuplicateSelectedItem(st);
         }
     } else {
         ImGui::TextDisabled("No registers in this group yet.");
@@ -867,10 +1003,14 @@ inline void DrawMemoryTab(ConfiguratorState &st) {
         static const char *archs[] = {"von_neumann", "harvard"};
         EditJsonCombo(st, "Architecture", mem, "architecture", archs, 2,
                       "von_neumann");
+        HelpMarker("Von Neumann shares one memory for code and data; "
+                   "Harvard keeps them separate.");
     }
     {
         static const char *ends[] = {"little", "big"};
         EditJsonCombo(st, "Endianness", mem, "endianness", ends, 2, "little");
+        HelpMarker("Little-endian stores the lowest byte first; "
+                   "big-endian stores the highest byte first.");
     }
     ImGui::Separator();
     ImGui::Text("Memory segments:");
@@ -895,6 +1035,7 @@ inline void DrawMemoryTab(ConfiguratorState &st) {
         st.sel_segment = static_cast<int>(segs.size()) - 1;
         st.ClearTextBufs();
         st.MarkDirty();
+        PushUndoSnapshot(st);
     }
     ImGui::EndChild();
     ImGui::SameLine();
@@ -912,10 +1053,8 @@ inline void DrawMemoryTab(ConfiguratorState &st) {
         EditJsonBool(st, "Execute (X)", seg, "X", true);
         ImGui::Separator();
         if (ImGui::Button("Remove this segment")) {
-            segs.erase(segs.begin() + st.sel_segment);
-            st.sel_segment = 0;
-            st.ClearTextBufs();
-            st.MarkDirty();
+            AskDelete(st, ConfiguratorState::DeleteKind::Segment,
+                      seg.value("name", "?"), st.sel_segment);
         }
     } else {
         ImGui::TextDisabled("No segments. (An empty list means one flat "
@@ -954,6 +1093,7 @@ inline void DrawAluTab(ConfiguratorState &st) {
         st.sel_flag = static_cast<int>(alu["flags"].size()) - 1;
         st.ClearTextBufs();
         st.MarkDirty();
+        PushUndoSnapshot(st);
     }
     ImGui::EndChild();
     ImGui::SameLine();
@@ -968,11 +1108,12 @@ inline void DrawAluTab(ConfiguratorState &st) {
         EditJsonString(st, "Type", flag, "type", base + "/type");
         EditJsonString(st, "Expression (optional)", flag, "expression",
                        base + "/expression", true);
+        HelpMarker("An expression over result, a, b or width that sets "
+                   "this flag, e.g. result == 0; empty means the loader "
+                   "decides.");
         if (ImGui::Button("Remove this flag")) {
-            alu["flags"].erase(alu["flags"].begin() + st.sel_flag);
-            st.sel_flag = 0;
-            st.ClearTextBufs();
-            st.MarkDirty();
+            AskDelete(st, ConfiguratorState::DeleteKind::Flag,
+                      flag.value("name", "?"), st.sel_flag);
         }
     } else {
         ImGui::TextDisabled("No flags defined.");
@@ -982,7 +1123,20 @@ inline void DrawAluTab(ConfiguratorState &st) {
     ImGui::Separator();
     ImGui::Text("Operations:");
     ImGui::BeginChild("op_list", ImVec2(180, 0), true);
+    size_t op_shown = 0;
+    for (size_t i = 0; i < alu["operations"].size(); ++i)
+        if (NameMatchesFilter(alu["operations"][i].value("name", "?"),
+                              st.filter_alu))
+            ++op_shown;
+    ImGui::TextDisabled("Filter by name:");
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 70.0f);
+    InputTextBuf(st, "##filter_alu", "filter/alu", st.filter_alu);
+    ImGui::SameLine();
+    ImGui::Text("%zu of %zu", op_shown, alu["operations"].size());
     for (size_t i = 0; i < alu["operations"].size(); ++i) {
+        if (!NameMatchesFilter(alu["operations"][i].value("name", "?"),
+                               st.filter_alu))
+            continue;
         const std::string label = alu["operations"][i].value("name", "?") +
                                   "###op" + std::to_string(i);
         if (ImGui::Selectable(label.c_str(),
@@ -1002,6 +1156,7 @@ inline void DrawAluTab(ConfiguratorState &st) {
             st.sel_alu_op = static_cast<int>(alu["operations"].size()) - 1;
             st.ClearTextBufs();
             st.MarkDirty();
+            PushUndoSnapshot(st);
         }
     }
     ImGui::EndChild();
@@ -1027,6 +1182,7 @@ inline void DrawAluTab(ConfiguratorState &st) {
                 op["expression"] = first;
                 st.ClearTextBufs();
                 st.MarkDirty();
+                PushUndoSnapshot(st);
             }
         }
         ImGui::SameLine();
@@ -1037,8 +1193,12 @@ inline void DrawAluTab(ConfiguratorState &st) {
                 op["program"] = nlohmann::json::array({expr});
                 st.ClearTextBufs();
                 st.MarkDirty();
+                PushUndoSnapshot(st);
             }
         }
+        HelpMarker("Expression is one line like a + b; Program is a "
+                   "mini-language with if, while and for, one statement "
+                   "per line.");
         if (op.contains("program")) {
             std::string prog_text;
             if (op["program"].is_string())
@@ -1055,6 +1215,8 @@ inline void DrawAluTab(ConfiguratorState &st) {
                 op["program"] = SplitLines(prog_text);
                 st.MarkDirty();
             }
+            if (ImGui::IsItemDeactivatedAfterEdit())
+                PushUndoSnapshot(st);
         } else {
             EditJsonString(st, "Expression", op, "expression",
                            base + "/expression");
@@ -1072,10 +1234,12 @@ inline void DrawAluTab(ConfiguratorState &st) {
             "instruction, in the Instructions tab.");
         ImGui::Separator();
         if (ImGui::Button("Remove this operation")) {
-            alu["operations"].erase(alu["operations"].begin() + st.sel_alu_op);
-            st.sel_alu_op = 0;
-            st.ClearTextBufs();
-            st.MarkDirty();
+            AskDelete(st, ConfiguratorState::DeleteKind::AluOp,
+                      op.value("name", "?"), st.sel_alu_op);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Duplicate")) {
+            DuplicateSelectedItem(st);
         }
     } else {
         ImGui::TextDisabled("No ALU operations defined.");
@@ -1189,7 +1353,8 @@ inline void DrawInstructionPreview(const nlohmann::json &doc,
 
 // Problems of one instruction: each issue as a red problem line followed
 // by its concrete fix. Rendered under the instruction's Preview panel.
-inline void DrawInstructionProblems(const nlohmann::json &doc,
+inline void DrawInstructionProblems(ConfiguratorState &st,
+                                    const nlohmann::json &doc,
                                     const nlohmann::json &inst) {
     const std::vector<ConfigDiagnostics::Issue> issues =
         ConfigDiagnostics::DiagnoseInstruction(doc, inst);
@@ -1199,9 +1364,15 @@ inline void DrawInstructionProblems(const nlohmann::json &doc,
                            "No problems in this instruction.");
         return;
     }
+    int row = 0;
     for (const auto &issue : issues) {
-        ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s",
-                           issue.problem.c_str());
+        const std::string row_label =
+            issue.problem + "###instprob" + std::to_string(row++);
+        ImGui::PushStyleColor(ImGuiCol_Text,
+                              ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+        if (ImGui::Selectable(row_label.c_str(), false))
+            NavigateToIssue(st, issue);
+        ImGui::PopStyleColor();
         ImGui::TextWrapped("Fix: %s", issue.fix.c_str());
     }
 }
@@ -1215,6 +1386,8 @@ inline void DrawProblemsTab(ConfiguratorState &st) {
         ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "No problems.");
         return;
     }
+    int row = 0; // shared across the area loop and the "Other" loop,
+                 // so the ###prob ids stay unique
     static const char *areas[] = {"System", "Registers", "ALU",
                                   "Instructions", "Memory", "Peripherals"};
     for (const char *area : areas) {
@@ -1227,9 +1400,24 @@ inline void DrawProblemsTab(ConfiguratorState &st) {
                 ImGui::Text("%s:", area);
                 first_in_area = false;
             }
-            ImGui::TextWrapped("%s", issue.where.c_str());
-            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s",
-                               issue.problem.c_str());
+            // Clickable row: the whole where + problem line navigates
+            // to the issue. (Selectable does not wrap, so a long
+            // problem runs past the right edge on one line; the Fix
+            // line below still wraps.)
+            const std::string row_label =
+                issue.where + ": " + issue.problem + "###prob" +
+                std::to_string(row++);
+            ImGui::PushStyleColor(ImGuiCol_Text,
+                                  ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+            if (ImGui::Selectable(row_label.c_str(), false))
+                NavigateToIssue(st, issue);
+            ImGui::PopStyleColor();
+            if (ImGui::IsItemHovered()) {
+                std::string tip = "Go to " + issue.nav_tab;
+                if (!issue.nav_name.empty())
+                    tip += " / " + issue.nav_name;
+                ImGui::SetTooltip("%s", tip.c_str());
+            }
             ImGui::TextWrapped("Fix: %s", issue.fix.c_str());
         }
     }
@@ -1249,9 +1437,20 @@ inline void DrawProblemsTab(ConfiguratorState &st) {
             ImGui::Text("Other:");
             other_heading_shown = true;
         }
-        ImGui::TextWrapped("%s", issue.where.c_str());
-        ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s",
-                           issue.problem.c_str());
+        const std::string row_label =
+            issue.where + ": " + issue.problem + "###prob" +
+            std::to_string(row++);
+        ImGui::PushStyleColor(ImGuiCol_Text,
+                              ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+        if (ImGui::Selectable(row_label.c_str(), false))
+            NavigateToIssue(st, issue);
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered()) {
+            std::string tip = "Go to " + issue.nav_tab;
+            if (!issue.nav_name.empty())
+                tip += " / " + issue.nav_name;
+            ImGui::SetTooltip("%s", tip.c_str());
+        }
         ImGui::TextWrapped("Fix: %s", issue.fix.c_str());
     }
 }
@@ -1347,6 +1546,8 @@ inline void EditMicroOpArg(ConfiguratorState &st, const nlohmann::json &doc,
             uop[key] = v;
             st.MarkDirty();
         }
+        if (ImGui::IsItemDeactivatedAfterEdit())
+            PushUndoSnapshot(st);
     }
 }
 
@@ -1360,10 +1561,33 @@ inline void DrawInstructionsTab(ConfiguratorState &st) {
         iset["instructions"] = nlohmann::json::array();
     nlohmann::json &insts = iset["instructions"];
 
-    ImGui::BeginChild("inst_list", ImVec2(200, 0), true);
+    ImGui::BeginChild("inst_list", ImVec2(280, 0), true);
+    size_t inst_shown = 0;
+    for (size_t i = 0; i < insts.size(); ++i)
+        if (NameMatchesFilter(insts[i].value("name", "?"),
+                              st.filter_instructions))
+            ++inst_shown;
+    ImGui::TextDisabled("Filter by name:");
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 70.0f);
+    InputTextBuf(st, "##filter_inst", "filter/instructions",
+                 st.filter_instructions);
+    ImGui::SameLine();
+    ImGui::Text("%zu of %zu", inst_shown, insts.size());
     for (size_t i = 0; i < insts.size(); ++i) {
-        const std::string label = insts[i].value("name", "?") + "###inst" +
-                                  std::to_string(i);
+        if (!NameMatchesFilter(insts[i].value("name", "?"),
+                               st.filter_instructions))
+            continue; // hidden by the filter; `i` still indexes the
+                      // underlying array, so selection is unaffected
+        const size_t uop_count =
+            insts[i].contains("microcode") &&
+                    insts[i]["microcode"].is_array()
+                ? insts[i]["microcode"].size()
+                : 0;
+        const std::string label =
+            insts[i].value("name", "?") + " (opcode " +
+            std::to_string(insts[i].value("opcode", 0)) + ", " +
+            std::to_string(uop_count) + " uops)" + "###inst" +
+            std::to_string(i);
         if (ImGui::Selectable(label.c_str(),
                               st.sel_instruction == static_cast<int>(i)))
             st.sel_instruction = static_cast<int>(i);
@@ -1388,6 +1612,7 @@ inline void DrawInstructionsTab(ConfiguratorState &st) {
             st.sel_instruction = static_cast<int>(insts.size()) - 1;
             st.ClearTextBufs();
             st.MarkDirty();
+            PushUndoSnapshot(st);
         }
     }
     ImGui::EndChild();
@@ -1400,10 +1625,11 @@ inline void DrawInstructionsTab(ConfiguratorState &st) {
         const std::string base = "inst/" + std::to_string(st.sel_instruction);
         EditJsonString(st, "Name", inst, "name", base + "/name");
         const int old_opcode = inst.value("opcode", 0);
-        EditJsonInt(st, "Opcode", inst, "opcode", 0, 0, 65535);
+        EditJsonInt(st, "Opcode", inst, "opcode", 0, 0, 65535, false);
         if (inst.value("opcode", 0) != old_opcode) {
             SyncEncodingWithOpcode(inst, inst.value("opcode", 0));
             st.ClearTextBufs();
+            PushUndoSnapshot(st);
         }
         {
             int lat = inst.value("latency", -1);
@@ -1414,6 +1640,7 @@ inline void DrawInstructionsTab(ConfiguratorState &st) {
                 else
                     inst["latency"] = lat;
                 st.MarkDirty();
+                PushUndoSnapshot(st);
             }
         }
         {
@@ -1421,6 +1648,10 @@ inline void DrawInstructionsTab(ConfiguratorState &st) {
                                           "additive"};
             EditJsonCombo(st, "Latency mode", inst, "latency_mode", modes, 4,
                           "dynamic");
+            HelpMarker("How the instruction's latency combines with its "
+                       "micro-ops: dynamic adds them up, strict uses the "
+                       "latency as-is, bottleneck takes the slower of "
+                       "the two, additive adds the latency on top.");
         }
         {
             // Plain-words explanation of the mode the loader will
@@ -1472,6 +1703,11 @@ inline void DrawInstructionsTab(ConfiguratorState &st) {
                     st.MarkDirty();
                 }
             }
+            if (ImGui::IsItemDeactivatedAfterEdit())
+                PushUndoSnapshot(st);
+            HelpMarker("A comma-separated list: the first element is the "
+                       "opcode, then one element per operand, e.g. "
+                       "5, dest, src.");
         }
         ImGui::Separator();
         ImGui::Text("Microcode:");
@@ -1526,6 +1762,7 @@ inline void DrawInstructionsTab(ConfiguratorState &st) {
             st.sel_microop = static_cast<int>(uops.size()) - 1;
             st.ClearTextBufs();
             st.MarkDirty();
+            PushUndoSnapshot(st);
         }
         ImGui::EndChild();
         ImGui::SameLine();
@@ -1544,7 +1781,7 @@ inline void DrawInstructionsTab(ConfiguratorState &st) {
             // the beside-label was clipped at the window edge.
             ImGui::Text("Action");
             EditJsonCombo(st, "##action", uop, "action", actions, 10,
-                          "halt");
+                          "halt", false);
             const std::string action = uop.value("action", "halt");
             if (action != old_action) {
                 // The new action needs different arguments: drop the
@@ -1571,6 +1808,7 @@ inline void DrawInstructionsTab(ConfiguratorState &st) {
                     }
                 st.ClearTextBufs();
                 st.MarkDirty();
+                PushUndoSnapshot(st);
             }
             // Guided arguments: exactly what this action needs, each
             // as its own picker field. No free-text box to mistype
@@ -1600,10 +1838,8 @@ inline void DrawInstructionsTab(ConfiguratorState &st) {
                                 .c_str());
             }
             if (ImGui::Button("Remove this micro-op")) {
-                uops.erase(uops.begin() + st.sel_microop);
-                st.sel_microop = 0;
-                st.ClearTextBufs();
-                st.MarkDirty();
+                AskDelete(st, ConfiguratorState::DeleteKind::MicroOp,
+                          uop.value("action", "?"), st.sel_microop);
             }
         } else {
             ImGui::TextDisabled("No micro-ops. An instruction needs at "
@@ -1613,13 +1849,15 @@ inline void DrawInstructionsTab(ConfiguratorState &st) {
         ImGui::Separator();
         DrawInstructionPreview(doc, inst);
         ImGui::Separator();
-        DrawInstructionProblems(doc, inst);
+        DrawInstructionProblems(st, doc, inst);
         ImGui::Separator();
         if (ImGui::Button("Remove this instruction")) {
-            insts.erase(insts.begin() + st.sel_instruction);
-            st.sel_instruction = 0;
-            st.ClearTextBufs();
-            st.MarkDirty();
+            AskDelete(st, ConfiguratorState::DeleteKind::Instruction,
+                      inst.value("name", "?"), st.sel_instruction);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Duplicate")) {
+            DuplicateSelectedItem(st);
         }
     } else {
         ImGui::TextDisabled("No instructions defined.");
@@ -1843,7 +2081,11 @@ inline void DrawHookEditor(ConfiguratorState &st,
                     "assign", HookEditor::AvailableTargets(periph))});
             st.ClearTextBufs();
             st.MarkDirty();
+            PushUndoSnapshot(st);
         }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Insert example hook"))
+            InsertExampleHook(st, obj, key);
     } else {
         // Palette: drag a type onto any list, or click to append a
         // node of that type to this hook's top-level list.
@@ -1859,6 +2101,7 @@ inline void DrawHookEditor(ConfiguratorState &st,
                     type, HookEditor::AvailableTargets(periph)));
                 st.ClearTextBufs();
                 st.MarkDirty();
+                PushUndoSnapshot(st);
             }
             ImGui::PopStyleColor(3);
             HookDragSource("new\n" + type, (type + " block").c_str());
@@ -1897,8 +2140,11 @@ inline void DrawHookEditor(ConfiguratorState &st,
             if (ok) {
                 st.ClearTextBufs();
                 st.MarkDirty();
+                PushUndoSnapshot(st);
             }
         }
+        if (ImGui::SmallButton("Insert example hook"))
+            InsertExampleHook(st, obj, key);
     }
     ImGui::PopID();
 }
@@ -1934,15 +2180,18 @@ inline void DrawHookNodeList(ConfiguratorState &st,
             ImGui::Separator();
     }
     if (erase_idx >= 0) {
-        nodes.erase(nodes.begin() + erase_idx);
-        st.ClearTextBufs();
-        st.MarkDirty();
+        HookEditor::NodePath node_path = list_path;
+        node_path.push_back(HookEditor::PathSeg::Index(erase_idx));
+        AskDelete(st, ConfiguratorState::DeleteKind::HookNode,
+                  nodes[erase_idx].value("type", "?"), erase_idx, -1, "",
+                  hook_id, node_path);
     } else if (move_idx >= 0) {
         const int j = move_idx + move_dir;
         if (j >= 0 && j < static_cast<int>(nodes.size())) {
             std::swap(nodes[move_idx], nodes[j]);
             st.ClearTextBufs();
             st.MarkDirty();
+            PushUndoSnapshot(st);
         }
     }
     // Trailing drop zone: dropping here appends to this list.
@@ -1962,6 +2211,7 @@ inline void DrawHookNodeList(ConfiguratorState &st,
             "assign", HookEditor::AvailableTargets(periph)));
         st.ClearTextBufs();
         st.MarkDirty();
+        PushUndoSnapshot(st);
     }
     ImGui::PopID();
 }
@@ -2015,6 +2265,7 @@ inline void DrawHookNode(ConfiguratorState &st,
                 types[idx], HookEditor::AvailableTargets(periph));
             st.ClearTextBufs();
             st.MarkDirty();
+            PushUndoSnapshot(st);
             type_changed = true;
         }
         ImGui::PopStyleColor(3);
@@ -2057,6 +2308,8 @@ inline void DrawHookNode(ConfiguratorState &st,
                 node["condition"] = cond;
                 st.MarkDirty();
             }
+            if (ImGui::IsItemDeactivatedAfterEdit())
+                PushUndoSnapshot(st);
             ImGui::Text("then:");
             ImGui::Indent();
             HookEditor::NodePath then_path = node_path;
@@ -2073,14 +2326,15 @@ inline void DrawHookNode(ConfiguratorState &st,
                                  else_path, hook_id);
                 ImGui::Unindent();
                 if (ImGui::SmallButton("Remove else branch")) {
-                    node.erase("else");
-                    st.ClearTextBufs();
-                    st.MarkDirty();
+                    AskDelete(st,
+                              ConfiguratorState::DeleteKind::HookElseBranch,
+                              "else branch", -1, -1, "", hook_id, node_path);
                 }
             } else if (ImGui::SmallButton("+ Add else branch")) {
                 node["else"] = nlohmann::json::array();
                 st.ClearTextBufs();
                 st.MarkDirty();
+                PushUndoSnapshot(st);
             }
         } else if (cur_type == "assign") {
             const std::vector<std::string> options =
@@ -2103,6 +2357,7 @@ inline void DrawHookNode(ConfiguratorState &st,
                         ? options[tidx]
                         : "";
                 st.MarkDirty();
+                PushUndoSnapshot(st);
             }
             if (std::find(options.begin(), options.end(), cur) ==
                 options.end()) {
@@ -2113,6 +2368,8 @@ inline void DrawHookNode(ConfiguratorState &st,
                     node["target"] = v;
                     st.MarkDirty();
                 }
+                if (ImGui::IsItemDeactivatedAfterEdit())
+                    PushUndoSnapshot(st);
             }
             ImGui::Text("expr");
             std::string expr = node.value("expr", "0");
@@ -2120,6 +2377,8 @@ inline void DrawHookNode(ConfiguratorState &st,
                 node["expr"] = expr;
                 st.MarkDirty();
             }
+            if (ImGui::IsItemDeactivatedAfterEdit())
+                PushUndoSnapshot(st);
         } else if (cur_type == "call") {
             const std::vector<std::string> funcs = HookEditor::CallFuncs();
             const std::string cur = node.value("func", "trigger_interrupt");
@@ -2150,6 +2409,7 @@ inline void DrawHookNode(ConfiguratorState &st,
                         node["args"].push_back("0");
                 }
                 st.MarkDirty();
+                PushUndoSnapshot(st);
             }
             if (std::find(funcs.begin(), funcs.end(), cur) ==
                 funcs.end()) {
@@ -2160,6 +2420,8 @@ inline void DrawHookNode(ConfiguratorState &st,
                     node["func"] = v;
                     st.MarkDirty();
                 }
+                if (ImGui::IsItemDeactivatedAfterEdit())
+                    PushUndoSnapshot(st);
             }
             const int arity =
                 HookEditor::CallFuncArity(node.value("func", ""));
@@ -2183,15 +2445,17 @@ inline void DrawHookNode(ConfiguratorState &st,
                     node["args"][j] = a;
                     st.MarkDirty();
                 }
+                if (ImGui::IsItemDeactivatedAfterEdit())
+                    PushUndoSnapshot(st);
                 ImGui::SameLine();
                 if (ImGui::SmallButton("x"))
                     erase_arg = static_cast<int>(j);
                 ImGui::PopID();
             }
             if (erase_arg >= 0) {
-                node["args"].erase(node["args"].begin() + erase_arg);
-                st.ClearTextBufs();
-                st.MarkDirty();
+                AskDelete(st, ConfiguratorState::DeleteKind::HookArg,
+                          "argument " + std::to_string(erase_arg + 1),
+                          erase_arg, -1, "", hook_id, node_path);
             }
             if (ImGui::SmallButton("+ Add argument")) {
                 if (!node.contains("args") || !node["args"].is_array())
@@ -2200,6 +2464,7 @@ inline void DrawHookNode(ConfiguratorState &st,
                     node["args"].push_back("0");
                 st.ClearTextBufs();
                 st.MarkDirty();
+                PushUndoSnapshot(st);
             }
         }
     }
@@ -2218,7 +2483,21 @@ inline void DrawPeripheralsTab(ConfiguratorState &st) {
     nlohmann::json &periphs = doc["peripherals"];
 
     ImGui::BeginChild("periph_list", ImVec2(200, 0), true);
+    size_t per_shown = 0;
+    for (size_t i = 0; i < periphs.size(); ++i)
+        if (NameMatchesFilter(periphs[i].value("name", "?"),
+                              st.filter_peripherals))
+            ++per_shown;
+    ImGui::TextDisabled("Filter by name:");
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 70.0f);
+    InputTextBuf(st, "##filter_per", "filter/peripherals",
+                 st.filter_peripherals);
+    ImGui::SameLine();
+    ImGui::Text("%zu of %zu", per_shown, periphs.size());
     for (size_t i = 0; i < periphs.size(); ++i) {
+        if (!NameMatchesFilter(periphs[i].value("name", "?"),
+                               st.filter_peripherals))
+            continue;
         const std::string label = periphs[i].value("name", "?") + "###per" +
                                   std::to_string(i);
         if (ImGui::Selectable(label.c_str(),
@@ -2233,7 +2512,11 @@ inline void DrawPeripheralsTab(ConfiguratorState &st) {
         st.sel_peripheral = static_cast<int>(periphs.size()) - 1;
         st.ClearTextBufs();
         st.MarkDirty();
+        PushUndoSnapshot(st);
     }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Insert example peripheral"))
+        InsertExamplePeripheral(st);
     ImGui::EndChild();
     ImGui::SameLine();
     ImGui::BeginChild("periph_editor", ImVec2(0, 0), true);
@@ -2285,6 +2568,7 @@ inline void DrawPeripheralsTab(ConfiguratorState &st) {
             st.sel_periph_reg = static_cast<int>(regs.size()) - 1;
             st.ClearTextBufs();
             st.MarkDirty();
+            PushUndoSnapshot(st);
         }
         ImGui::EndChild();
         ImGui::SameLine();
@@ -2304,10 +2588,8 @@ inline void DrawPeripheralsTab(ConfiguratorState &st) {
             }
             EditJsonWordText(st, "Initial", r, "initial", rbase + "/initial");
             if (ImGui::Button("Remove this register")) {
-                regs.erase(regs.begin() + st.sel_periph_reg);
-                st.sel_periph_reg = 0;
-                st.ClearTextBufs();
-                st.MarkDirty();
+                AskDelete(st, ConfiguratorState::DeleteKind::PeriphReg,
+                          r.value("name", "?"), st.sel_periph_reg);
             }
         } else {
             ImGui::TextDisabled("No registers.");
@@ -2330,10 +2612,12 @@ inline void DrawPeripheralsTab(ConfiguratorState &st) {
                        "no context value in tick_behavior");
         ImGui::Separator();
         if (ImGui::Button("Remove this peripheral")) {
-            periphs.erase(periphs.begin() + st.sel_peripheral);
-            st.sel_peripheral = 0;
-            st.ClearTextBufs();
-            st.MarkDirty();
+            AskDelete(st, ConfiguratorState::DeleteKind::Peripheral,
+                      p.value("name", "?"), st.sel_peripheral);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Duplicate")) {
+            DuplicateSelectedItem(st);
         }
     } else {
         ImGui::TextDisabled("No peripherals defined.");
@@ -2358,6 +2642,7 @@ inline void DrawJsonTab(ConfiguratorState &st) {
             st.doc = parsed;
             st.ClearTextBufs();
             st.MarkDirty();
+            PushUndoSnapshot(st);
             st.action_msg = "Applied edited JSON.";
         } catch (const std::exception &e) {
             st.action_msg = std::string("Invalid JSON: ") + e.what();
@@ -2371,6 +2656,782 @@ inline void DrawJsonTab(ConfiguratorState &st) {
     }
 }
 
+// ---- Group 1 (Safety): undo/redo, delete confirmation, unsaved
+// ---- changes warnings. The snapshot rule: push the document AFTER
+// ---- a mutation (UndoHistory owns the current state, so undo can
+// ---- put it on the redo stack); identical consecutive snapshots
+// ---- are deduped inside push(), so unconditional pushes are safe.
+
+inline void PushUndoSnapshot(ConfiguratorState &st) {
+    st.history.push(st.doc);
+}
+
+inline void DoUndo(ConfiguratorState &st) {
+    const std::optional<nlohmann::json> prev = st.history.undo();
+    if (!prev.has_value())
+        return;
+    st.doc = *prev;
+    st.dirty = !st.history.isSaved(st.doc);
+    ++st.doc_version;
+    st.ClearTextBufs();
+}
+
+inline void DoRedo(ConfiguratorState &st) {
+    const std::optional<nlohmann::json> next = st.history.redo();
+    if (!next.has_value())
+        return;
+    st.doc = *next;
+    st.dirty = !st.history.isSaved(st.doc);
+    ++st.doc_version;
+    st.ClearTextBufs();
+}
+
+// Resolve a register by its editor path ("general_purpose/0",
+// "special/2", optionally "/sub/<i>" repeated for nested
+// sub-registers). Used to find a sub-register's parent when its
+// delete is confirmed. Returns nullptr when the path is stale.
+inline nlohmann::json *ResolveRegisterByPath(ConfiguratorState &st,
+                                             const std::string &path) {
+    std::vector<std::string> parts;
+    size_t pos = 0;
+    while (pos <= path.size()) {
+        const size_t slash = path.find('/', pos);
+        parts.push_back(path.substr(
+            pos, slash == std::string::npos ? std::string::npos
+                                            : slash - pos));
+        if (slash == std::string::npos)
+            break;
+        pos = slash + 1;
+    }
+    if (parts.size() < 2 || !st.doc.contains("registers") ||
+        !st.doc["registers"].is_object())
+        return nullptr;
+    nlohmann::json *cur = nullptr;
+    try {
+        const int idx = std::stoi(parts[1]);
+        nlohmann::json &arr = st.doc["registers"][parts[0]];
+        if (!arr.is_array() || idx < 0 ||
+            idx >= static_cast<int>(arr.size()))
+            return nullptr;
+        cur = &arr[static_cast<size_t>(idx)];
+        size_t i = 2;
+        while (i + 1 < parts.size()) {
+            if (parts[i] != "sub")
+                return nullptr;
+            const int sub = std::stoi(parts[i + 1]);
+            if (!cur->contains("sub_registers") ||
+                !(*cur)["sub_registers"].is_array() || sub < 0 ||
+                sub >= static_cast<int>((*cur)["sub_registers"].size()))
+                return nullptr;
+            cur = &(*cur)["sub_registers"][static_cast<size_t>(sub)];
+            i += 2;
+        }
+    } catch (...) {
+        return nullptr;
+    }
+    return cur;
+}
+
+// Resolve a hook array by its editor id ("per/<p>/tick" or
+// "per/<p>/preg/<r>/on_read|on_write"). Returns nullptr when stale.
+inline nlohmann::json *ResolveHookArray(ConfiguratorState &st,
+                                        const std::string &hook_id) {
+    std::vector<std::string> parts;
+    size_t pos = 0;
+    while (pos <= hook_id.size()) {
+        const size_t slash = hook_id.find('/', pos);
+        parts.push_back(hook_id.substr(
+            pos, slash == std::string::npos ? std::string::npos
+                                            : slash - pos));
+        if (slash == std::string::npos)
+            break;
+        pos = slash + 1;
+    }
+    if (parts.size() < 3 || parts[0] != "per" ||
+        !st.doc.contains("peripherals") ||
+        !st.doc["peripherals"].is_array())
+        return nullptr;
+    try {
+        const int p = std::stoi(parts[1]);
+        nlohmann::json &periphs = st.doc["peripherals"];
+        if (p < 0 || p >= static_cast<int>(periphs.size()))
+            return nullptr;
+        nlohmann::json &periph = periphs[static_cast<size_t>(p)];
+        if (parts.size() == 3 && parts[2] == "tick") {
+            if (!periph.contains("tick_behavior"))
+                return nullptr;
+            return &periph["tick_behavior"];
+        }
+        if (parts.size() == 5 && parts[2] == "preg") {
+            const int r = std::stoi(parts[3]);
+            if (!periph.contains("registers") ||
+                !periph["registers"].is_array())
+                return nullptr;
+            nlohmann::json &regs = periph["registers"];
+            if (r < 0 || r >= static_cast<int>(regs.size()))
+                return nullptr;
+            nlohmann::json &reg = regs[static_cast<size_t>(r)];
+            if (!reg.contains(parts[4]))
+                return nullptr;
+            return &reg[parts[4]];
+        }
+    } catch (...) {
+        return nullptr;
+    }
+    return nullptr;
+}
+
+// Record a pending delete; the shared modal asks for confirmation
+// and ApplyPendingDelete resolves it. `path` is the register path
+// for SubRegister deletes, `hook_id` + `node_path` identify hook
+// deletes; the rest use `index` (+ `group` for registers).
+inline void AskDelete(ConfiguratorState &st,
+                      ConfiguratorState::DeleteKind kind,
+                      const std::string &name, int index, int group,
+                      const std::string &path,
+                      const std::string &hook_id,
+                      const HookEditor::NodePath &node_path) {
+    st.pending_delete_kind = kind;
+    st.pending_delete_name = name;
+    st.pending_delete_index = index;
+    st.pending_delete_group = group;
+    st.pending_delete_path = path;
+    st.pending_delete_hook_id = hook_id;
+    st.pending_delete_node_path = node_path;
+}
+
+// Carry out the pending delete (called from the modal's Delete
+// button). Every branch re-checks its bounds, so a delete recorded
+// before the document changed cannot erase the wrong item. The
+// snapshot is pushed after the mutation.
+inline void ApplyPendingDelete(ConfiguratorState &st) {
+    using Kind = ConfiguratorState::DeleteKind;
+    const Kind kind = st.pending_delete_kind;
+    const int idx = st.pending_delete_index;
+    nlohmann::json &doc = st.doc;
+    bool done = false;
+    switch (kind) {
+        case Kind::Instruction: {
+            if (!doc.contains("instruction_set") ||
+                !doc["instruction_set"].contains("instructions") ||
+                !doc["instruction_set"]["instructions"].is_array())
+                break;
+            nlohmann::json &insts =
+                doc["instruction_set"]["instructions"];
+            if (idx < 0 || idx >= static_cast<int>(insts.size()))
+                break;
+            insts.erase(insts.begin() + idx);
+            st.sel_instruction = 0;
+            done = true;
+            break;
+        }
+        case Kind::MicroOp: {
+            if (!doc.contains("instruction_set") ||
+                !doc["instruction_set"].contains("instructions") ||
+                !doc["instruction_set"]["instructions"].is_array())
+                break;
+            nlohmann::json &insts =
+                doc["instruction_set"]["instructions"];
+            if (st.sel_instruction < 0 ||
+                st.sel_instruction >= static_cast<int>(insts.size()))
+                break;
+            nlohmann::json &inst = insts[st.sel_instruction];
+            if (!inst.contains("microcode") ||
+                !inst["microcode"].is_array())
+                break;
+            nlohmann::json &uops = inst["microcode"];
+            if (idx < 0 || idx >= static_cast<int>(uops.size()))
+                break;
+            uops.erase(uops.begin() + idx);
+            st.sel_microop = 0;
+            done = true;
+            break;
+        }
+        case Kind::Register: {
+            const char *group = st.pending_delete_group == 0
+                                    ? "general_purpose"
+                                    : "special";
+            if (!doc.contains("registers") ||
+                !doc["registers"].contains(group))
+                break;
+            nlohmann::json &arr = doc["registers"][group];
+            if (!arr.is_array() || idx < 0 ||
+                idx >= static_cast<int>(arr.size()))
+                break;
+            arr.erase(arr.begin() + idx);
+            st.sel_register = 0;
+            done = true;
+            break;
+        }
+        case Kind::SubRegister: {
+            nlohmann::json *reg =
+                ResolveRegisterByPath(st, st.pending_delete_path);
+            if (!reg || !reg->contains("sub_registers") ||
+                !(*reg)["sub_registers"].is_array())
+                break;
+            nlohmann::json &subs = (*reg)["sub_registers"];
+            if (idx < 0 || idx >= static_cast<int>(subs.size()))
+                break;
+            subs.erase(subs.begin() + idx);
+            done = true;
+            break;
+        }
+        case Kind::Segment: {
+            if (!doc.contains("memory") ||
+                !doc["memory"].contains("segments") ||
+                !doc["memory"]["segments"].is_array())
+                break;
+            nlohmann::json &segs = doc["memory"]["segments"];
+            if (idx < 0 || idx >= static_cast<int>(segs.size()))
+                break;
+            segs.erase(segs.begin() + idx);
+            st.sel_segment = 0;
+            done = true;
+            break;
+        }
+        case Kind::Flag: {
+            if (!doc.contains("alu") || !doc["alu"].contains("flags") ||
+                !doc["alu"]["flags"].is_array())
+                break;
+            nlohmann::json &flags = doc["alu"]["flags"];
+            if (idx < 0 || idx >= static_cast<int>(flags.size()))
+                break;
+            flags.erase(flags.begin() + idx);
+            st.sel_flag = 0;
+            done = true;
+            break;
+        }
+        case Kind::AluOp: {
+            if (!doc.contains("alu") ||
+                !doc["alu"].contains("operations") ||
+                !doc["alu"]["operations"].is_array())
+                break;
+            nlohmann::json &ops = doc["alu"]["operations"];
+            if (idx < 0 || idx >= static_cast<int>(ops.size()))
+                break;
+            ops.erase(ops.begin() + idx);
+            st.sel_alu_op = 0;
+            done = true;
+            break;
+        }
+        case Kind::Peripheral: {
+            if (!doc.contains("peripherals") ||
+                !doc["peripherals"].is_array())
+                break;
+            nlohmann::json &periphs = doc["peripherals"];
+            if (idx < 0 || idx >= static_cast<int>(periphs.size()))
+                break;
+            periphs.erase(periphs.begin() + idx);
+            st.sel_peripheral = 0;
+            done = true;
+            break;
+        }
+        case Kind::PeriphReg: {
+            if (!doc.contains("peripherals") ||
+                !doc["peripherals"].is_array())
+                break;
+            nlohmann::json &periphs = doc["peripherals"];
+            if (st.sel_peripheral < 0 ||
+                st.sel_peripheral >= static_cast<int>(periphs.size()))
+                break;
+            nlohmann::json &periph = periphs[st.sel_peripheral];
+            if (!periph.contains("registers") ||
+                !periph["registers"].is_array())
+                break;
+            nlohmann::json &regs = periph["registers"];
+            if (idx < 0 || idx >= static_cast<int>(regs.size()))
+                break;
+            regs.erase(regs.begin() + idx);
+            st.sel_periph_reg = 0;
+            done = true;
+            break;
+        }
+        case Kind::HookNode: {
+            nlohmann::json *hook =
+                ResolveHookArray(st, st.pending_delete_hook_id);
+            if (hook && hook->is_array() &&
+                HookEditor::RemoveNode(*hook, st.pending_delete_node_path))
+                done = true;
+            break;
+        }
+        case Kind::HookArg: {
+            nlohmann::json *hook =
+                ResolveHookArray(st, st.pending_delete_hook_id);
+            if (!hook || !hook->is_array())
+                break;
+            nlohmann::json *node = HookEditor::FindNode(
+                *hook, st.pending_delete_node_path);
+            if (!node || !node->contains("args") ||
+                !(*node)["args"].is_array())
+                break;
+            nlohmann::json &args = (*node)["args"];
+            if (idx < 0 || idx >= static_cast<int>(args.size()))
+                break;
+            args.erase(args.begin() + idx);
+            done = true;
+            break;
+        }
+        case Kind::HookElseBranch: {
+            nlohmann::json *hook =
+                ResolveHookArray(st, st.pending_delete_hook_id);
+            if (!hook || !hook->is_array())
+                break;
+            nlohmann::json *node = HookEditor::FindNode(
+                *hook, st.pending_delete_node_path);
+            if (!node || !node->contains("else"))
+                break;
+            node->erase("else");
+            done = true;
+            break;
+        }
+        case Kind::None:
+            break;
+    }
+    if (done) {
+        st.ClearTextBufs();
+        st.MarkDirty();
+        PushUndoSnapshot(st);
+    }
+}
+
+// Load a file (or the blank template) only after the user confirms
+// when the document has unsaved changes; otherwise load at once.
+inline void RequestLoad(ConfiguratorState &st,
+                        const std::string &file_path) {
+    if (st.dirty) {
+        st.pending_open_path = file_path;
+        st.open_confirm_pending = true;
+        return;
+    }
+    st.LoadFromFile(file_path);
+}
+
+inline void RequestNewTemplate(ConfiguratorState &st) {
+    if (st.dirty) {
+        st.pending_open_path.clear();
+        st.open_confirm_pending = true;
+        return;
+    }
+    st.LoadTemplate();
+}
+
+// The three confirmation modals, rendered at the end of
+// UI_Configurator. OpenPopup is called right before BeginPopupModal
+// in the same frame, which is the documented way to open a modal.
+inline void RenderDeleteModal(ConfiguratorState &st) {
+    if (st.pending_delete_kind == ConfiguratorState::DeleteKind::None)
+        return;
+    ImGui::OpenPopup("Confirm delete");
+    if (ImGui::BeginPopupModal("Confirm delete", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Delete %s? You can undo with Ctrl+Z.",
+                    st.pending_delete_name.c_str());
+        if (ImGui::Button("Delete")) {
+            ApplyPendingDelete(st);
+            st.pending_delete_kind = ConfiguratorState::DeleteKind::None;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) {
+            st.pending_delete_kind = ConfiguratorState::DeleteKind::None;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+}
+
+inline void RenderOpenConfirmModal(ConfiguratorState &st) {
+    if (!st.open_confirm_pending)
+        return;
+    ImGui::OpenPopup("Unsaved changes");
+    if (ImGui::BeginPopupModal("Unsaved changes", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("You have unsaved changes. Discard them?");
+        if (ImGui::Button("Discard")) {
+            st.open_confirm_pending = false;
+            ImGui::CloseCurrentPopup();
+            if (st.pending_open_path.empty())
+                st.LoadTemplate();
+            else
+                st.LoadFromFile(st.pending_open_path);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) {
+            st.open_confirm_pending = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+}
+
+inline void RenderQuitModal(ConfiguratorState &st) {
+    if (!st.quit_requested)
+        return;
+    ImGui::OpenPopup("Quit without saving?");
+    if (ImGui::BeginPopupModal("Quit without saving?", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("You have unsaved changes. Quit without saving?");
+        if (ImGui::Button("Quit")) {
+            st.quit_confirmed = true;
+            st.quit_requested = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) {
+            st.quit_requested = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+}
+
+// ---- Group 2 (Navigation): clickable problems and list filters.
+
+// Case-insensitive substring match for list filters; an empty filter
+// matches everything.
+inline bool NameMatchesFilter(const std::string &name,
+                              const std::string &filter) {
+    if (filter.empty())
+        return true;
+    auto lower = [](const std::string &s) {
+        std::string out = s;
+        for (char &c : out)
+            c = static_cast<char>(
+                std::tolower(static_cast<unsigned char>(c)));
+        return out;
+    };
+    return lower(name).find(lower(filter)) != std::string::npos;
+}
+
+// Navigate to an issue: switch to its tab (consumed next frame by
+// UI_Configurator via st.goto_tab) and select its item. nav_index -1
+// switches the tab only. Registers use a flattened top-level index
+// (general_purpose first, then special): split it into
+// (sel_group, sel_register). The ALU tab holds two lists; flags and
+// operations are told apart by the "ALU / flag ..." prefix of `where`.
+// Every tab's editor clamps its sel_* on draw, so an out-of-range
+// nav_index is harmless.
+inline void NavigateToIssue(ConfiguratorState &st,
+                            const ConfigDiagnostics::Issue &issue) {
+    st.goto_tab = issue.nav_tab;
+    if (issue.nav_index < 0)
+        return;
+    if (issue.nav_tab == "Instructions") {
+        st.sel_instruction = issue.nav_index;
+    } else if (issue.nav_tab == "Registers") {
+        int gp_count = 0;
+        if (st.doc.contains("registers") &&
+            st.doc["registers"].is_object() &&
+            st.doc["registers"].contains("general_purpose") &&
+            st.doc["registers"]["general_purpose"].is_array())
+            gp_count = static_cast<int>(
+                st.doc["registers"]["general_purpose"].size());
+        if (issue.nav_index < gp_count) {
+            st.sel_group = 0;
+            st.sel_register = issue.nav_index;
+        } else {
+            st.sel_group = 1;
+            st.sel_register = issue.nav_index - gp_count;
+        }
+    } else if (issue.nav_tab == "ALU") {
+        if (issue.where.rfind("ALU / flag ", 0) == 0)
+            st.sel_flag = issue.nav_index;
+        else
+            st.sel_alu_op = issue.nav_index;
+    } else if (issue.nav_tab == "Peripherals") {
+        st.sel_peripheral = issue.nav_index;
+        // Also select the peripheral register named in `where`
+        // ("Peripherals / 'P' register 'R'"), when there is one.
+        const std::string marker = " register '";
+        const size_t pos = issue.where.find(marker);
+        if (pos != std::string::npos) {
+            const size_t begin = pos + marker.size();
+            const size_t end = issue.where.find('\'', begin);
+            if (end != std::string::npos &&
+                st.doc.contains("peripherals") &&
+                st.doc["peripherals"].is_array() &&
+                issue.nav_index >= 0 &&
+                issue.nav_index <
+                    static_cast<int>(st.doc["peripherals"].size())) {
+                const std::string reg_name =
+                    issue.where.substr(begin, end - begin);
+                const auto &regs =
+                    st.doc["peripherals"][issue.nav_index]["registers"];
+                if (regs.is_array())
+                    for (size_t r = 0; r < regs.size(); ++r)
+                        if (regs[r].value("name", "") == reg_name) {
+                            st.sel_periph_reg = static_cast<int>(r);
+                            break;
+                        }
+            }
+        }
+    } else if (issue.nav_tab == "Memory") {
+        st.sel_segment = issue.nav_index;
+    }
+}
+
+// ---- Group 3 (Speed): duplicate, keyboard shortcuts, recent files.
+
+// Names of the items in an array, for UniqueCopyName.
+inline std::vector<std::string>
+ItemNames(const nlohmann::json &arr) {
+    std::vector<std::string> names;
+    if (arr.is_array())
+        for (const auto &it : arr)
+            names.push_back(it.value("name", ""));
+    return names;
+}
+
+// Duplicate the selected item in the active tab. Instructions and
+// ALU operations get the first free opcode/code (reuse
+// FirstFreeCode) and the instruction's encoding is synced to the new
+// opcode. Returns false when nothing can be duplicated (empty list,
+// full code range, or a tab with no duplicable list).
+inline bool DuplicateSelectedItem(ConfiguratorState &st) {
+    nlohmann::json &doc = st.doc;
+    if (st.active_tab == "Instructions") {
+        if (!doc.contains("instruction_set") ||
+            !doc["instruction_set"].contains("instructions") ||
+            !doc["instruction_set"]["instructions"].is_array())
+            return false;
+        nlohmann::json &insts = doc["instruction_set"]["instructions"];
+        if (insts.empty() || st.sel_instruction < 0 ||
+            st.sel_instruction >= static_cast<int>(insts.size()))
+            return false;
+        const nlohmann::json &src = insts[st.sel_instruction];
+        const int code = FirstFreeCode(insts, "opcode", 65535);
+        if (code < 0) {
+            st.action_msg = "No free instruction opcode left (0-65535 "
+                            "are all used).";
+            return false;
+        }
+        nlohmann::json copy = DuplicateItem(
+            src,
+            UniqueCopyName(ItemNames(insts), src.value("name", "?")));
+        copy["opcode"] = code;
+        SyncEncodingWithOpcode(copy, code);
+        insts.push_back(copy);
+        st.sel_instruction = static_cast<int>(insts.size()) - 1;
+        st.ClearTextBufs();
+        st.MarkDirty();
+        PushUndoSnapshot(st);
+        return true;
+    }
+    if (st.active_tab == "Registers") {
+        const char *group =
+            st.sel_group == 0 ? "general_purpose" : "special";
+        if (!doc.contains("registers") ||
+            !doc["registers"].contains(group))
+            return false;
+        nlohmann::json &arr = doc["registers"][group];
+        if (!arr.is_array() || arr.empty() || st.sel_register < 0 ||
+            st.sel_register >= static_cast<int>(arr.size()))
+            return false;
+        const nlohmann::json &src = arr[st.sel_register];
+        nlohmann::json copy = DuplicateItem(
+            src, UniqueCopyName(ItemNames(arr), src.value("name", "?")));
+        arr.push_back(copy);
+        st.sel_register = static_cast<int>(arr.size()) - 1;
+        st.ClearTextBufs();
+        st.MarkDirty();
+        PushUndoSnapshot(st);
+        return true;
+    }
+    if (st.active_tab == "ALU") {
+        if (!doc.contains("alu") || !doc["alu"].contains("operations") ||
+            !doc["alu"]["operations"].is_array())
+            return false;
+        nlohmann::json &ops = doc["alu"]["operations"];
+        if (ops.empty() || st.sel_alu_op < 0 ||
+            st.sel_alu_op >= static_cast<int>(ops.size()))
+            return false;
+        const nlohmann::json &src = ops[st.sel_alu_op];
+        const int code = FirstFreeCode(ops, "code", 255);
+        if (code < 0) {
+            st.action_msg =
+                "No free ALU code left (0-255 are all used).";
+            return false;
+        }
+        nlohmann::json copy = DuplicateItem(
+            src, UniqueCopyName(ItemNames(ops), src.value("name", "?")));
+        copy["code"] = code;
+        ops.push_back(copy);
+        st.sel_alu_op = static_cast<int>(ops.size()) - 1;
+        st.ClearTextBufs();
+        st.MarkDirty();
+        PushUndoSnapshot(st);
+        return true;
+    }
+    if (st.active_tab == "Peripherals") {
+        if (!doc.contains("peripherals") ||
+            !doc["peripherals"].is_array())
+            return false;
+        nlohmann::json &periphs = doc["peripherals"];
+        if (periphs.empty() || st.sel_peripheral < 0 ||
+            st.sel_peripheral >= static_cast<int>(periphs.size()))
+            return false;
+        const nlohmann::json &src = periphs[st.sel_peripheral];
+        nlohmann::json copy = DuplicateItem(
+            src,
+            UniqueCopyName(ItemNames(periphs), src.value("name", "?")));
+        periphs.push_back(copy);
+        st.sel_peripheral = static_cast<int>(periphs.size()) - 1;
+        st.ClearTextBufs();
+        st.MarkDirty();
+        PushUndoSnapshot(st);
+        return true;
+    }
+    return false;
+}
+
+// Keyboard shortcuts (also Group 1's Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y
+// for undo/redo). Never fires while a text field is being edited
+// (io.WantTextInput), so typing in a field cannot save, undo or
+// duplicate by accident. Redo is checked before undo so
+// Ctrl+Shift+Z cannot also match plain Ctrl+Z.
+inline void HandleKeyboardShortcuts(ConfiguratorState &st) {
+    ImGuiIO &io = ImGui::GetIO();
+    if (io.WantTextInput)
+        return;
+    if (ImGui::Shortcut(ImGuiKey_S | ImGuiMod_Ctrl)) {
+        if (st.path.empty())
+            st.action_msg = "No file path set. Type a path above first.";
+        else
+            st.SaveToFile(st.path);
+    }
+    if (ImGui::Shortcut(ImGuiKey_Z | ImGuiMod_Ctrl | ImGuiMod_Shift) ||
+        ImGui::Shortcut(ImGuiKey_Y | ImGuiMod_Ctrl)) {
+        DoRedo(st);
+    } else if (ImGui::Shortcut(ImGuiKey_Z | ImGuiMod_Ctrl)) {
+        DoUndo(st);
+    }
+    if (ImGui::Shortcut(ImGuiKey_D | ImGuiMod_Ctrl))
+        DuplicateSelectedItem(st);
+}
+
+// Recent files (persisted in the settings file, see
+// configurator_main.cpp): one clickable button per path, on one row
+// after a "Recent:" label. Loading through RequestLoad keeps the
+// unsaved-changes warning.
+inline void RenderRecentFiles(ConfiguratorState &st) {
+    if (st.settings.recent_files.empty())
+        return;
+    ImGui::Text("Recent:");
+    for (const std::string &recent : st.settings.recent_files) {
+        ImGui::SameLine();
+        if (ImGui::Button(recent.c_str()))
+            RequestLoad(st, recent);
+    }
+    ImGui::NewLine();
+}
+
+// ---- Group 4 (Clarity): help markers and example inserts.
+
+// One uniform tooltip pattern: a grey "(?)" after a field; hovering
+// shows the one-sentence explanation.
+inline void HelpMarker(const char *text) {
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", text);
+}
+
+// Parse a word value ("0x3000", "123", 123) to an integer; -1 when
+// it is not a number.
+inline int ExampleWordValue(const nlohmann::json &v) {
+    try {
+        if (v.is_number_integer())
+            return v.get<int>();
+        if (v.is_number_unsigned())
+            return static_cast<int>(v.get<unsigned>());
+        if (v.is_string()) {
+            const std::string s = Trim(v.get<std::string>());
+            if (s.empty())
+                return -1;
+            size_t used = 0;
+            const long n = std::stol(s, &used, 0);
+            if (used != s.size())
+                return -1;
+            return static_cast<int>(n);
+        }
+    } catch (...) {
+    }
+    return -1;
+}
+
+// Insert the example timer peripheral (see example_items.hpp).
+// The builder always uses 0x3000-0x3003, so the range is shifted
+// forward by 4 until it no longer overlaps an existing peripheral:
+// inserting a second example stays valid instead of flagging an
+// overlap in Problems.
+inline void InsertExamplePeripheral(ConfiguratorState &st) {
+    nlohmann::json &doc = st.doc;
+    if (!doc.contains("peripherals") || !doc["peripherals"].is_array())
+        doc["peripherals"] = nlohmann::json::array();
+    nlohmann::json &periphs = doc["peripherals"];
+    const std::string name =
+        UniqueCopyName(ItemNames(periphs), "ExampleTimer");
+    nlohmann::json example = ExampleItems::ExamplePeripheral(name);
+    int start = ExampleWordValue(example["address_start"]);
+    int end = ExampleWordValue(example["address_end"]);
+    if (start >= 0 && end >= start) {
+        bool overlap = true;
+        while (overlap) {
+            overlap = false;
+            for (const auto &p : periphs) {
+                const int os =
+                    p.contains("address_start")
+                        ? ExampleWordValue(p["address_start"])
+                        : -1;
+                const int oe =
+                    p.contains("address_end")
+                        ? ExampleWordValue(p["address_end"])
+                        : -1;
+                if (os < 0 || oe < os)
+                    continue;
+                if (start <= oe && os <= end) {
+                    overlap = true;
+                    break;
+                }
+            }
+            if (overlap) {
+                start += 4;
+                end += 4;
+            }
+        }
+        if (start != ExampleWordValue(example["address_start"])) {
+            std::ostringstream ss;
+            ss << "0x" << std::hex << start;
+            example["address_start"] = ss.str();
+            std::ostringstream es;
+            es << "0x" << std::hex << end;
+            example["address_end"] = es.str();
+        }
+    }
+    periphs.push_back(example);
+    st.sel_peripheral = static_cast<int>(periphs.size()) - 1;
+    st.ClearTextBufs();
+    st.MarkDirty();
+    PushUndoSnapshot(st);
+}
+
+// Insert the MathCoProcessor-style sample hook (see
+// example_items.hpp): fills the hook when it is absent or empty,
+// appends the sample nodes when it already has nodes.
+inline void InsertExampleHook(ConfiguratorState &st, nlohmann::json &obj,
+                              const char *key) {
+    const nlohmann::json example = ExampleItems::ExampleHook();
+    if (!obj.contains(key) || !obj[key].is_array() ||
+        obj[key].empty())
+        obj[key] = example;
+    else
+        for (const auto &node : example)
+            obj[key].push_back(node);
+    st.ClearTextBufs();
+    st.MarkDirty();
+    PushUndoSnapshot(st);
+}
+
 inline void DrawTopBar(ConfiguratorState &st) {
     ImGui::Text("File:");
     ImGui::SameLine();
@@ -2381,11 +3442,7 @@ inline void DrawTopBar(ConfiguratorState &st) {
     }
     ImGui::SameLine();
     if (ImGui::Button("Open")) {
-        if (st.dirty) {
-            // Loading discards unsaved edits; the status line says so.
-            st.action_msg = "Discarded unsaved changes and loaded the file.";
-        }
-        st.LoadFromFile(st.path);
+        RequestLoad(st, st.path);
     }
     ImGui::SameLine();
     if (ImGui::Button("Save")) {
@@ -2402,9 +3459,23 @@ inline void DrawTopBar(ConfiguratorState &st) {
             st.SaveToFile(st.path);
     }
     ImGui::SameLine();
-    if (ImGui::Button("New")) {
-        st.LoadTemplate();
+    ImGui::BeginDisabled(!st.history.canUndo());
+    if (ImGui::Button("Undo (Ctrl+Z)")) {
+        DoUndo(st);
     }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!st.history.canRedo());
+    if (ImGui::Button("Redo (Ctrl+Y)")) {
+        DoRedo(st);
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("New")) {
+        RequestNewTemplate(st);
+    }
+
+    RenderRecentFiles(st);
 
     ImGui::Text("Presets:");
     ImGui::SameLine();
@@ -2413,7 +3484,7 @@ inline void DrawTopBar(ConfiguratorState &st) {
                                     "16bit_lab.json"};
     for (const char *preset : presets) {
         if (ImGui::Button(preset)) {
-            st.LoadFromFile(ResolvePresetPath(preset));
+            RequestLoad(st, ResolvePresetPath(preset));
         }
         ImGui::SameLine();
     }
@@ -2470,6 +3541,22 @@ inline void DrawTopBar(ConfiguratorState &st) {
         st.theme = static_cast<UITheme>(theme_idx);
         ApplyTheme(st.theme);
     }
+
+    ImGui::SameLine();
+    static const char *scales[] = {"0.9x", "1.0x", "1.25x", "1.5x"};
+    static const double scale_values[] = {0.9, 1.0, 1.25, 1.5};
+    int scale_idx = 1;
+    for (int i = 0; i < 4; ++i)
+        if (std::abs(st.settings.ui_scale - scale_values[i]) < 0.001)
+            scale_idx = i;
+    if (ImGui::Combo("UI scale", &scale_idx, scales,
+                     IM_ARRAYSIZE(scales))) {
+        st.settings.ui_scale = scale_values[scale_idx];
+        ImGui::GetIO().FontGlobalScale =
+            static_cast<float>(st.settings.ui_scale);
+        if (!st.settings_path.empty())
+            SaveSettings(st.settings_path, st.settings);
+    }
 }
 
 } // namespace ConfiguratorDetail
@@ -2478,42 +3565,83 @@ inline void UI_Configurator(ConfiguratorState &st) {
     if (st.last_validated_version != st.doc_version)
         st.RefreshValidation();
     ImGui::Begin("CPU Configurator");
+    ConfiguratorDetail::HandleKeyboardShortcuts(st);
     ConfiguratorDetail::DrawTopBar(st);
     ImGui::Separator();
     if (ImGui::BeginTabBar("ConfiguratorTabs")) {
-        if (ImGui::BeginTabItem("System")) {
+        // A clicked problem selects its tab; the flag is consumed
+        // (cleared) once that tab is open. The click takes effect on
+        // the next frame, since the target tab's BeginTabItem already
+        // ran this frame -- a one-frame delay, imperceptible.
+        const std::string want_tab = st.goto_tab;
+        const auto tab_flags = [&want_tab](const char *label) {
+            return want_tab == label ? ImGuiTabItemFlags_SetSelected
+                                     : ImGuiTabItemFlags_None;
+        };
+        if (ImGui::BeginTabItem("System", nullptr, tab_flags("System"))) {
+            if (want_tab == "System")
+                st.goto_tab.clear();
+            st.active_tab = "System";
             ConfiguratorDetail::DrawSystemTab(st);
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Registers")) {
+        if (ImGui::BeginTabItem("Registers", nullptr,
+                                tab_flags("Registers"))) {
+            if (want_tab == "Registers")
+                st.goto_tab.clear();
+            st.active_tab = "Registers";
             ConfiguratorDetail::DrawRegistersTab(st);
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Memory")) {
+        if (ImGui::BeginTabItem("Memory", nullptr, tab_flags("Memory"))) {
+            if (want_tab == "Memory")
+                st.goto_tab.clear();
+            st.active_tab = "Memory";
             ConfiguratorDetail::DrawMemoryTab(st);
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("ALU")) {
+        if (ImGui::BeginTabItem("ALU", nullptr, tab_flags("ALU"))) {
+            if (want_tab == "ALU")
+                st.goto_tab.clear();
+            st.active_tab = "ALU";
             ConfiguratorDetail::DrawAluTab(st);
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Instructions")) {
+        if (ImGui::BeginTabItem("Instructions", nullptr,
+                                tab_flags("Instructions"))) {
+            if (want_tab == "Instructions")
+                st.goto_tab.clear();
+            st.active_tab = "Instructions";
             ConfiguratorDetail::DrawInstructionsTab(st);
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Problems")) {
+        if (ImGui::BeginTabItem("Problems", nullptr,
+                                tab_flags("Problems"))) {
+            if (want_tab == "Problems")
+                st.goto_tab.clear();
+            st.active_tab = "Problems";
             ConfiguratorDetail::DrawProblemsTab(st);
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Peripherals")) {
+        if (ImGui::BeginTabItem("Peripherals", nullptr,
+                                tab_flags("Peripherals"))) {
+            if (want_tab == "Peripherals")
+                st.goto_tab.clear();
+            st.active_tab = "Peripherals";
             ConfiguratorDetail::DrawPeripheralsTab(st);
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("JSON")) {
+        if (ImGui::BeginTabItem("JSON", nullptr, tab_flags("JSON"))) {
+            if (want_tab == "JSON")
+                st.goto_tab.clear();
+            st.active_tab = "JSON";
             ConfiguratorDetail::DrawJsonTab(st);
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
     }
+    ConfiguratorDetail::RenderDeleteModal(st);
+    ConfiguratorDetail::RenderOpenConfirmModal(st);
+    ConfiguratorDetail::RenderQuitModal(st);
     ImGui::End();
 }

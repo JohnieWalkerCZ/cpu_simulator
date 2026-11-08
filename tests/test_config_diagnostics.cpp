@@ -30,12 +30,35 @@ static bool HasIssue(const std::vector<Issue> &issues,
     return false;
 }
 
+// True when some issue whose problem contains `problem_sub`
+// navigates to (`tab`, `index`, `name`).
+static bool HasNav(const std::vector<Issue> &issues,
+                   const std::string &problem_sub, const std::string &tab,
+                   int index, const std::string &name) {
+    for (const auto &issue : issues)
+        if (issue.problem.find(problem_sub) != std::string::npos &&
+            issue.nav_tab == tab && issue.nav_index == index &&
+            issue.nav_name == name)
+            return true;
+    return false;
+}
+
 // Every issue must carry a non-empty problem and a non-empty fix.
 static void AssertProblemAndFix(const std::vector<Issue> &issues) {
+    // nav_tab is always one of the configurator's tab labels, and
+    // nav_index is -1 only when the issue belongs to no specific item.
+    static const char *tabs[] = {"System", "Registers", "ALU",
+                                 "Instructions", "Memory", "Peripherals"};
     for (const auto &issue : issues) {
         assert(!issue.where.empty());
         assert(!issue.problem.empty());
         assert(!issue.fix.empty());
+        bool known_tab = false;
+        for (const char *t : tabs)
+            if (issue.nav_tab == t)
+                known_tab = true;
+        assert(known_tab);
+        assert(issue.nav_index >= -1);
     }
 }
 
@@ -80,6 +103,8 @@ int main() {
         AssertProblemAndFix(issues);
         assert(issues.size() == 1);
         assert(HasIssue(issues, "empty", "\"name\""));
+        // An unnamed instruction still navigates to its own index.
+        assert(HasNav(issues, "empty", "Instructions", 0, ""));
     }
 
     // Duplicate opcode: two instructions sharing opcode 200.
@@ -91,6 +116,7 @@ int main() {
         AssertProblemAndFix(issues);
         assert(issues.size() == 1);
         assert(HasIssue(issues, "Opcode 200", "opcode"));
+        assert(HasNav(issues, "Opcode 200", "Instructions", 0, "FIRST"));
     }
 
     // Empty encoding.
@@ -115,6 +141,8 @@ int main() {
         AssertProblemAndFix(issues);
         assert(issues.size() == 1);
         assert(HasIssue(issues, "encoding[0] is 6", "\"encoding\""));
+        assert(HasNav(issues, "encoding[0] is 6", "Instructions", 0,
+                      "MISMATCH"));
     }
 
     // Empty microcode.
@@ -286,7 +314,13 @@ int main() {
             doc["alu"]["operations"][0]["code"];
         std::vector<Issue> issues = Diagnose(doc);
         AssertProblemAndFix(issues);
-        assert(HasIssue(issues, "ALU code 1", "\"code\""));
+        assert(HasIssue(issues, "ALU code 1", "free code")); // pre-existing
+        // test bug fixed: the fix says "a free code (0-255)", it never
+        // contained a quoted "code", so the old "\"code\"" expectation
+        // failed at HEAD too (verified by stashing my changes).
+        // The second operation with the code (SUB, index 1) is the one
+        // reported, and it navigates to that operation in the ALU tab.
+        assert(HasNav(issues, "ALU code 1", "ALU", 1, "SUB"));
     }
 
     // data_bus width not a multiple of 4.
@@ -297,6 +331,8 @@ int main() {
         AssertProblemAndFix(issues);
         assert(HasIssue(issues, "data_bus.width is 10",
                         "\"data_bus.width\""));
+        // A system-level issue belongs to no item: tab only.
+        assert(HasNav(issues, "data_bus.width is 10", "System", -1, ""));
     }
 
     // No register with the program_counter role.
@@ -318,6 +354,8 @@ int main() {
         std::vector<Issue> issues = Diagnose(doc);
         AssertProblemAndFix(issues);
         assert(HasIssue(issues, "overlap", "\"start\""));
+        // An overlap navigates to the first of the two segments (ROM).
+        assert(HasNav(issues, "overlap", "Memory", 0, "ROM"));
     }
 
     // Duplicate flag bit.
@@ -326,7 +364,69 @@ int main() {
         doc["alu"]["flags"][1]["bit"] = doc["alu"]["flags"][0]["bit"];
         std::vector<Issue> issues = Diagnose(doc);
         AssertProblemAndFix(issues);
-        assert(HasIssue(issues, "Flag bit 0", "\"bit\""));
+        assert(HasIssue(issues, "Flag bit 0", "no other flag uses"));
+        // (Same pre-existing test bug as the ALU-code case above: the
+        // duplicate-bit fix never contained a quoted "bit".)
+        // The second flag on the bit (C, index 1) navigates to that
+        // flag in the ALU tab's flag list.
+        assert(HasNav(issues, "Flag bit 0", "ALU", 1, "C"));
+    }
+
+    // Duplicate register name in general_purpose: the second R0 (index
+    // 1 in the flattened top-level order) navigates to itself.
+    {
+        json doc = base;
+        doc["registers"]["general_purpose"][1]["name"] = "R0";
+        std::vector<Issue> issues = Diagnose(doc);
+        AssertProblemAndFix(issues);
+        assert(issues.size() == 1);
+        assert(HasIssue(issues, "Register name 'R0'", "Rename"));
+        assert(HasNav(issues, "Register name 'R0'", "Registers", 1, "R0"));
+    }
+
+    // Duplicate register name across groups: SP renamed to PC. The
+    // flattened top-level order is R0..R3 (0-3), PC (4), SP (5),
+    // FLAGS (6), so the duplicate navigates to index 5.
+    {
+        json doc = base;
+        doc["registers"]["special"][1]["name"] = "PC";
+        std::vector<Issue> issues = Diagnose(doc);
+        AssertProblemAndFix(issues);
+        assert(issues.size() == 1);
+        assert(HasIssue(issues, "Register name 'PC'", "Rename"));
+        assert(HasNav(issues, "Register name 'PC'", "Registers", 5, "PC"));
+    }
+
+    // A sub-register issue navigates to its top-level parent: R0L's
+    // mask only selects 1 bit of R0, but the issue points at R0
+    // (top-level index 0), the item the Registers tab selects.
+    {
+        json doc = base;
+        doc["registers"]["general_purpose"][0]["sub_registers"] =
+            json::array({{{"name", "R0L"},
+                          {"width", 8},
+                          {"mask", "0b00000001"}}});
+        std::vector<Issue> issues = Diagnose(doc);
+        AssertProblemAndFix(issues);
+        assert(issues.size() == 1);
+        assert(HasIssue(issues, "only selects 1 bit", "mask"));
+        assert(HasNav(issues, "only selects 1 bit", "Registers", 0, "R0"));
+    }
+
+    // Peripheral issue: an unknown type navigates to that peripheral.
+    // (SystemTimer, index 2: its range overlaps nothing, unlike
+    // SerialTerminal, whose range deliberately overlaps
+    // DeclarativeUART's under the layered-terminal exception -- changing
+    // SerialTerminal's type would add a second, overlap issue.)
+    {
+        json doc = base;
+        doc["peripherals"][2]["type"] = "bogus";
+        std::vector<Issue> issues = Diagnose(doc);
+        AssertProblemAndFix(issues);
+        assert(issues.size() == 1);
+        assert(HasIssue(issues, "unknown type", "text_display"));
+        assert(HasNav(issues, "unknown type", "Peripherals", 2,
+                      "SystemTimer"));
     }
 
     // Opcode wider than the opcode_width mask.

@@ -179,3 +179,31 @@ add_executable(test_hook_editor
 target_link_libraries(test_hook_editor PRIVATE cpu_core)
 add_test(NAME test_hook_editor COMMAND test_hook_editor)
 set_tests_properties(test_hook_editor PROPERTIES WORKING_DIRECTORY "${TEST_WORKING_DIR}")
+
+add_executable(test_undo_history
+    tests/test_undo_history.cpp
+)
+target_link_libraries(test_undo_history PRIVATE cpu_core)
+add_test(NAME test_undo_history COMMAND test_undo_history)
+set_tests_properties(test_undo_history PROPERTIES WORKING_DIRECTORY "${TEST_WORKING_DIR}")
+
+add_executable(test_app_settings
+    tests/test_app_settings.cpp
+)
+target_link_libraries(test_app_settings PRIVATE cpu_core)
+add_test(NAME test_app_settings COMMAND test_app_settings)
+set_tests_properties(test_app_settings PROPERTIES WORKING_DIRECTORY "${TEST_WORKING_DIR}")
+
+add_executable(test_duplicate
+    tests/test_duplicate.cpp
+)
+target_link_libraries(test_duplicate PRIVATE cpu_core)
+add_test(NAME test_duplicate COMMAND test_duplicate)
+set_tests_properties(test_duplicate PROPERTIES WORKING_DIRECTORY "${TEST_WORKING_DIR}")
+
+add_executable(test_example_items
+    tests/test_example_items.cpp
+)
+target_link_libraries(test_example_items PRIVATE cpu_core)
+add_test(NAME test_example_items COMMAND test_example_items)
+set_tests_properties(test_example_items PROPERTIES WORKING_DIRECTORY "${TEST_WORKING_DIR}")

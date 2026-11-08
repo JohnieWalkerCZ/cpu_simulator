@@ -31,6 +31,10 @@ TESTS=(
     "test_microop_editor"
     "test_register_layout"
     "test_hook_editor"
+    "test_undo_history"
+    "test_app_settings"
+    "test_duplicate"
+    "test_example_items"
 )
 
 PASSED=0

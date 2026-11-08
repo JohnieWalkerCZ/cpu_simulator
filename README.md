@@ -264,6 +264,26 @@ for you:
   Registers / ALU / Instructions / Memory / Peripherals), and the top
   status line summarizes the count and the first problem. The checks
   mirror the loader's validation rules (`src/ui/config_diagnostics.hpp`).
+* **Undo / redo and confirmations:** every edit is undoable (up to 50
+  steps): Ctrl+Z to undo, Ctrl+Shift+Z / Ctrl+Y to redo, with Undo /
+  Redo buttons in the top bar. Every Remove button asks first, and
+  opening a file or closing the window with unsaved changes asks first
+  too.
+* **Clickable Problems and filters:** each problem row jumps to the tab
+  and item it belongs to. The instruction, register, ALU-operation and
+  peripheral lists have a name filter with an "N of M" count, and
+  instruction rows show "NAME (opcode N, M uops)".
+* **Duplicate, shortcuts, recent files:** Duplicate next to Remove
+  copies the selected item (fresh opcode/code for instructions and ALU
+  operations). Ctrl+S saves, Ctrl+D duplicates the selected item in the
+  active tab. The last 8 files are clickable buttons under Open.
+* **Tooltips and examples:** a grey "(?)" after the trickiest fields
+  explains it in one sentence. "Insert example peripheral" adds a small
+  declarative timer; "Insert example hook" adds the MathCoProcessor-style
+  sample to a hook.
+* **Window and readability:** default window 1600x1000, with a UI scale
+  combo (0.9x / 1.0x / 1.25x / 1.5x) in the top bar, persisted with the
+  recent files in `~/.config/cpu_configurator/settings.txt`.
 * **Round-trip:** the configurator edits the JSON document itself, so a
   loaded file saved untouched keeps its content (values, hex strings such
   as `"0x2000"`, nested sub-registers and raw peripheral JSON). Saving

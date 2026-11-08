@@ -39,6 +39,29 @@ struct Issue {
     std::string where;   // "Area / location", e.g. "ALU / operation 'ADD'"
     std::string problem; // what is wrong, with the offending values
     std::string fix;     // what to change, naming the field and value/range
+    // Navigation target for the configurator UI: clicking the issue
+    // switches to this tab and selects this item in the tab's list.
+    // nav_tab must be one of the BeginTabItem labels in
+    // ui_configurator.hpp, verbatim: "System", "Registers", "Memory",
+    // "ALU", "Instructions" or "Peripherals". nav_index is the index
+    // of the item in that tab's list, or -1 when the issue belongs to
+    // no specific item (switch tab only). nav_name is the item's name
+    // for display ("" when there is no specific item).
+    //
+    // Index conventions per tab (the UI maps these onto its selection
+    // fields): Instructions = index in instruction_set.instructions
+    // (sel_instruction); ALU operations = index in alu.operations
+    // (sel_alu_op), ALU flags = index in alu.flags (sel_flag, told
+    // apart from operations by the "ALU / flag ..." prefix of `where`);
+    // Peripherals = index in peripherals (sel_peripheral); Memory =
+    // index in memory.segments (sel_segment); Registers = index of the
+    // top-level register in flattened document order
+    // (general_purpose first, then special), which the UI splits into
+    // (sel_group, sel_register) -- sub-register issues point at their
+    // top-level parent; System issues have no item (nav_index -1).
+    std::string nav_tab;
+    int nav_index = -1;
+    std::string nav_name;
 };
 
 // Area of an issue: the part of `where` before " / ".
@@ -334,9 +357,10 @@ inline bool MaskActiveBits(const nlohmann::json &val, int reg_width,
 
 inline void CheckSystem(const nlohmann::json &doc, const Context &ctx,
                         std::vector<Issue> &out) {
+    // System issues belong to no specific item: the tab only.
     auto add = [&](const std::string &loc, const std::string &problem,
                    const std::string &fix) {
-        out.push_back({"System / " + loc, problem, fix});
+        out.push_back({"System / " + loc, problem, fix, "System", -1, ""});
     };
     if (!doc.contains("name") || !doc["name"].is_string() ||
         doc["name"].get<std::string>().empty())
@@ -442,8 +466,10 @@ inline void CheckSystem(const nlohmann::json &doc, const Context &ctx,
 inline void CheckRegisters(const nlohmann::json &doc, const Context &ctx,
                            std::vector<Issue> &out) {
     auto add = [&](const std::string &loc, const std::string &problem,
-                   const std::string &fix) {
-        out.push_back({"Registers / " + loc, problem, fix});
+                   const std::string &fix, int nav_index = -1,
+                   const std::string &nav_name = "") {
+        out.push_back({"Registers / " + loc, problem, fix, "Registers",
+                       nav_index, nav_name});
     };
     if (!doc.contains("registers") || !doc["registers"].is_object()) {
         if (doc.contains("registers"))
@@ -457,11 +483,19 @@ inline void CheckRegisters(const nlohmann::json &doc, const Context &ctx,
     std::unordered_map<std::string, int> counts;
     int pc_count = 0, sp_count = 0, flags_count = 0;
     std::function<void(const nlohmann::json &, const std::string &, int,
-                       const std::string &)>
+                       const std::string &, int, const std::string &)>
         walk = [&](const nlohmann::json &reg, const std::string &parent_role,
-                   int parent_width, const std::string &parent_name) {
+                   int parent_width, const std::string &parent_name,
+                   int top_idx, const std::string &top_name) {
             if (!reg.is_object())
                 return;
+            // Issues on this register (or one of its sub-registers)
+            // navigate to the top-level register that owns it.
+            auto wadd = [&](const std::string &loc,
+                            const std::string &problem,
+                            const std::string &fix) {
+                add(loc, problem, fix, top_idx, top_name);
+            };
             const std::string name = JsonString(reg, "name");
             std::string loc;
             if (!reg.contains("name") || !reg["name"].is_string())
@@ -475,14 +509,14 @@ inline void CheckRegisters(const nlohmann::json &doc, const Context &ctx,
                     loc += " (#" + std::to_string(n) + ")";
             }
             if (!reg.contains("name") || !reg["name"].is_string())
-                add(loc, "A register has no \"name\".",
+                wadd(loc, "A register has no \"name\".",
                     "Give the register a \"name\", e.g. \"R4\".");
             else if (name.empty())
-                add(loc, "A register has an empty \"name\".",
+                wadd(loc, "A register has an empty \"name\".",
                     "Give the register a non-empty, unique \"name\", "
                     "e.g. \"R4\".");
             else if (!seen.insert(name).second)
-                add(loc,
+                wadd(loc,
                     "Register name '" + name + "' is used more than once.",
                     "Rename this register to a name no other register "
                     "(including sub-registers) uses.");
@@ -494,11 +528,11 @@ inline void CheckRegisters(const nlohmann::json &doc, const Context &ctx,
             else if (role == "flags" || role == "status_flags")
                 ++flags_count;
             if (!JsonHasInt(reg, "width"))
-                add(loc, "Register '" + name + "' has no numeric \"width\".",
+                wadd(loc, "Register '" + name + "' has no numeric \"width\".",
                     "Set \"width\" to a number from 1 to 128, e.g. 8.");
             const int width = JsonInt(reg, "width", 0);
             if (JsonHasInt(reg, "width") && (width < 1 || width > 128))
-                add(loc,
+                wadd(loc,
                     "Register '" + name + "' has width " +
                         std::to_string(width) +
                         ", but width must be from 1 to 128.",
@@ -506,7 +540,7 @@ inline void CheckRegisters(const nlohmann::json &doc, const Context &ctx,
             if (reg.contains("initial")) {
                 word_t initial = 0;
                 if (!TryWord(reg["initial"], initial))
-                    add(loc,
+                    wadd(loc,
                         "Register '" + name + "' has an initial value (\"" +
                             ScalarText(reg["initial"]) +
                             "\") that cannot be parsed as a number.",
@@ -514,7 +548,7 @@ inline void CheckRegisters(const nlohmann::json &doc, const Context &ctx,
                         "\"0x...\" string, e.g. 0.");
                 else if (width >= 1 && width <= 128 &&
                          initial > mask_for_width(width))
-                    add(loc,
+                    wadd(loc,
                         "Register '" + name + "' has initial value " +
                             word_to_dec_string(initial) +
                             ", which does not fit in " +
@@ -528,7 +562,7 @@ inline void CheckRegisters(const nlohmann::json &doc, const Context &ctx,
             }
             const std::string own_role = JsonString(reg, "role");
             if (!own_role.empty() && !IsKnownRole(own_role))
-                add(loc,
+                wadd(loc,
                     "Register '" + name + "' has unknown role \"" +
                         own_role + "\".",
                     "Set \"role\" to one of: pc, sp, flags, ir, "
@@ -539,14 +573,14 @@ inline void CheckRegisters(const nlohmann::json &doc, const Context &ctx,
                     int active = 0;
                     if (!MaskActiveBits(reg["mask"], width, parent_width,
                                         active))
-                        add(loc,
+                        wadd(loc,
                             "Sub-register '" + name + "' has a mask (\"" +
                                 ScalarText(reg["mask"]) +
                                 "\") that cannot be parsed.",
                             "Set \"mask\" to a \"0b...\" or \"0x...\" "
                             "string, e.g. \"0b0101\".");
                     else if (active < width)
-                        add(loc,
+                        wadd(loc,
                             "Sub-register '" + name + "' is " +
                                 std::to_string(width) +
                                 " bits wide, but its mask only selects " +
@@ -559,18 +593,18 @@ inline void CheckRegisters(const nlohmann::json &doc, const Context &ctx,
                     const int offset = JsonInt(reg, "offset", 0);
                     if (reg.contains("offset") &&
                         !JsonHasInt(reg, "offset"))
-                        add(loc,
+                        wadd(loc,
                             "Sub-register '" + name +
                                 "' has a non-numeric \"offset\".",
                             "Set \"offset\" to a whole number, e.g. 0.");
                     else if (offset < 0)
-                        add(loc,
+                        wadd(loc,
                             "Sub-register '" + name + "' has a negative "
                             "offset (" +
                                 std::to_string(offset) + ").",
                             "Set \"offset\" to a number from 0, e.g. 0.");
                     else if (offset + width > parent_width)
-                        add(loc,
+                        wadd(loc,
                             "Sub-register '" + name + "' (offset " +
                                 std::to_string(offset) + ", width " +
                                 std::to_string(width) +
@@ -586,14 +620,17 @@ inline void CheckRegisters(const nlohmann::json &doc, const Context &ctx,
             if (reg.contains("sub_registers") &&
                 reg["sub_registers"].is_array())
                 for (const auto &sub : reg["sub_registers"])
-                    walk(sub, role, width, name);
+                    walk(sub, role, width, name, top_idx, top_name);
         };
+    // Top-level registers in walk order (general_purpose first, then
+    // special): the navigation index of a register or sub-register.
+    int top_index = 0;
     for (const char *group : {"general_purpose", "special"}) {
         if (!doc["registers"].contains(group) ||
             !doc["registers"][group].is_array())
             continue;
         for (const auto &reg : doc["registers"][group])
-            walk(reg, "", -1, "");
+            walk(reg, "", -1, "", top_index++, JsonString(reg, "name"));
     }
     (void)ctx;
     if (pc_count != 1)
@@ -619,8 +656,10 @@ inline void CheckRegisters(const nlohmann::json &doc, const Context &ctx,
 inline void CheckAlu(const nlohmann::json &doc, const Context &ctx,
                      std::vector<Issue> &out) {
     auto add = [&](const std::string &loc, const std::string &problem,
-                   const std::string &fix) {
-        out.push_back({"ALU / " + loc, problem, fix});
+                   const std::string &fix, int nav_index = -1,
+                   const std::string &nav_name = "") {
+        out.push_back({"ALU / " + loc, problem, fix, "ALU", nav_index,
+                       nav_name});
     };
     if (!doc.contains("alu") || !doc["alu"].is_object())
         return;
@@ -635,28 +674,37 @@ inline void CheckAlu(const nlohmann::json &doc, const Context &ctx,
                 "8, \"role\": \"status_flags\" }.");
         std::unordered_set<std::string> seen_names;
         std::unordered_set<int> seen_bits;
-        for (const auto &f : alu["flags"]) {
+        for (size_t fi = 0; fi < alu["flags"].size(); ++fi) {
+            const auto &f = alu["flags"][fi];
             const std::string name = JsonString(f, "name");
             const std::string loc =
                 "flag '" + (name.empty() ? std::string("?") : name) + "'";
+            // Flag issues navigate to this flag in the ALU tab's flag
+            // list (sel_flag); the UI tells flags apart from
+            // operations by the "ALU / flag ..." prefix of `where`.
+            auto fadd = [&](const std::string &l,
+                            const std::string &problem,
+                            const std::string &fix) {
+                add(l, problem, fix, static_cast<int>(fi), name);
+            };
             if (!f.contains("name") || !f["name"].is_string())
-                add("flag (no name)", "A flag has no \"name\".",
+                fadd("flag (no name)", "A flag has no \"name\".",
                     "Give the flag a \"name\", e.g. \"Z\".");
             else if (name.empty())
-                add(loc, "A flag has an empty \"name\".",
+                fadd(loc, "A flag has an empty \"name\".",
                     "Give the flag a non-empty \"name\", e.g. \"Z\".");
             else if (!seen_names.insert(name).second)
-                add(loc, "Flag name '" + name + "' is used more than once.",
+                fadd(loc, "Flag name '" + name + "' is used more than once.",
                     "Rename this flag to a name no other flag uses.");
             if (!JsonHasInt(f, "bit"))
-                add(loc, "Flag '" + name + "' has no numeric \"bit\".",
+                fadd(loc, "Flag '" + name + "' has no numeric \"bit\".",
                     "Set \"bit\" to a whole number from 0 to " +
                         std::to_string(ctx.flags_width - 1) + ".");
             else {
                 const int bit = JsonInt(f, "bit", 0);
                 if (ctx.flags_width > 0 &&
                     (bit < 0 || bit >= ctx.flags_width))
-                    add(loc,
+                    fadd(loc,
                         "Flag '" + name + "' uses bit " +
                             std::to_string(bit) +
                             ", but the FLAGS register is only " +
@@ -666,7 +714,7 @@ inline void CheckAlu(const nlohmann::json &doc, const Context &ctx,
                         "Set \"bit\" to a number from 0 to " +
                             std::to_string(ctx.flags_width - 1) + ".");
                 if (!seen_bits.insert(bit).second)
-                    add(loc,
+                    fadd(loc,
                         "Flag bit " + std::to_string(bit) +
                             " is used by more than one flag.",
                         "Give this flag a bit no other flag uses (0.." +
@@ -674,7 +722,7 @@ inline void CheckAlu(const nlohmann::json &doc, const Context &ctx,
             }
             const std::string expr = JsonString(f, "expression");
             if (!expr.empty() && !ValidFlagExpression(expr))
-                add(loc,
+                fadd(loc,
                     "Flag '" + name + "' has an invalid expression \"" +
                         expr + "\".",
                     "Use only a, b, c, res and max_val in the "
@@ -685,24 +733,31 @@ inline void CheckAlu(const nlohmann::json &doc, const Context &ctx,
         return;
     std::unordered_set<std::string> seen_names;
     std::unordered_set<int> seen_codes;
-    for (const auto &op : alu["operations"]) {
+    for (size_t oi = 0; oi < alu["operations"].size(); ++oi) {
+        const auto &op = alu["operations"][oi];
         const std::string name = JsonString(op, "name");
         const std::string loc =
             "operation '" + (name.empty() ? std::string("?") : name) + "'";
+        // Operation issues navigate to this operation in the ALU tab's
+        // operations list (sel_alu_op).
+        auto oadd = [&](const std::string &l, const std::string &problem,
+                        const std::string &fix) {
+            add(l, problem, fix, static_cast<int>(oi), name);
+        };
         if (!op.contains("name") || !op["name"].is_string())
-            add("operation (no name)", "An ALU operation has no \"name\".",
+            oadd("operation (no name)", "An ALU operation has no \"name\".",
                 "Give the operation a \"name\", e.g. \"ADD\".");
         else if (name.empty())
-            add(loc, "An ALU operation has an empty \"name\".",
+            oadd(loc, "An ALU operation has an empty \"name\".",
                 "Give the operation a non-empty \"name\", e.g. \"ADD\".");
         else if (!seen_names.insert(name).second)
-            add(loc,
+            oadd(loc,
                 "ALU operation name '" + name + "' is used more than "
                 "once.",
                 "Rename this operation to a name no other ALU operation "
                 "uses.");
         if (op.contains("code") && !JsonHasInt(op, "code"))
-            add(loc,
+            oadd(loc,
                 "ALU operation '" + name +
                     "' has a non-numeric \"code\".",
                 "Set \"code\" to a whole number from 0 to 255.");
@@ -711,13 +766,13 @@ inline void CheckAlu(const nlohmann::json &doc, const Context &ctx,
             // operations collide on code 0.
             const int code = JsonInt(op, "code", 0);
             if (code < 0 || code > 255)
-                add(loc,
+                oadd(loc,
                     "ALU operation '" + name + "' has code " +
                         std::to_string(code) +
                         ", but codes must be from 0 to 255.",
                     "Set \"code\" to a number from 0 to 255.");
             else if (!seen_codes.insert(code).second)
-                add(loc,
+                oadd(loc,
                     "ALU code " + std::to_string(code) +
                         " is used by more than one operation.",
                     "Give this operation a free code (0-255); the first "
@@ -728,12 +783,12 @@ inline void CheckAlu(const nlohmann::json &doc, const Context &ctx,
         }
         if (op.contains("latency")) {
             if (!JsonHasInt(op, "latency"))
-                add(loc,
+                oadd(loc,
                     "ALU operation '" + name +
                         "' has a non-numeric \"latency\".",
                     "Set \"latency\" to a whole number of at least 1.");
             else if (JsonInt(op, "latency", 1) < 1)
-                add(loc,
+                oadd(loc,
                     "ALU operation '" + name + "' has latency " +
                         std::to_string(JsonInt(op, "latency", 1)) +
                         ", but latency must be at least 1 cycle.",
@@ -756,14 +811,14 @@ inline void CheckAlu(const nlohmann::json &doc, const Context &ctx,
                 ok_shape = false;
             }
             if (!ok_shape)
-                add(loc,
+                oadd(loc,
                     "ALU operation '" + name +
                         "' has a \"program\" that is neither a string "
                         "nor an array of strings.",
                     "Set \"program\" to an array of source lines, e.g. "
                     "[\"acc = 0;\", \"return acc;\"].");
             else if (!ALU::is_valid_program(lines))
-                add(loc,
+                oadd(loc,
                     "The program of ALU operation '" + name +
                         "' does not parse.",
                     "Check the mini-language: statements end with ';', "
@@ -774,14 +829,14 @@ inline void CheckAlu(const nlohmann::json &doc, const Context &ctx,
         } else {
             const std::string expr = JsonString(op, "expression");
             if (expr.empty())
-                add(loc,
+                oadd(loc,
                     "ALU operation '" + name +
                         "' has neither a valid \"expression\" nor a "
                         "\"program\".",
                     "Set \"expression\" to a valid expression using a, "
                     "b, c, e.g. \"a + b\", or use \"program\" instead.");
             else if (!ALU::is_valid_expression(expr))
-                add(loc,
+                oadd(loc,
                     "ALU operation '" + name + "' has an invalid "
                     "expression \"" +
                         expr + "\".",
@@ -860,12 +915,14 @@ inline void CheckOperand(const Context &ctx,
                          const std::string &action, int uop_index,
                          const std::string &arg_key,
                          const std::string &value, bool writable,
-                         std::vector<Issue> &out) {
+                         std::vector<Issue> &out, int nav_index,
+                         const std::string &nav_name) {
     const std::string prefix = "Micro-op " + std::to_string(uop_index) +
                                " (" + action + ") argument '" + arg_key +
                                "': ";
     auto add = [&](const std::string &problem, const std::string &fix) {
-        out.push_back({where, prefix + problem, fix});
+        out.push_back({where, prefix + problem, fix, "Instructions",
+                       nav_index, nav_name});
     };
     if (value.empty()) {
         add("is empty.",
@@ -968,8 +1025,10 @@ inline void DiagnoseOneInstruction(const nlohmann::json &doc,
     else
         loc = "'" + name + "'";
     const std::string where = "Instructions / " + loc;
+    // Instruction issues navigate to this instruction in the
+    // Instructions tab's list (sel_instruction).
     auto add = [&](const std::string &problem, const std::string &fix) {
-        out.push_back({where, problem, fix});
+        out.push_back({where, problem, fix, "Instructions", index, name});
     };
     if (!inst.is_object()) {
         add("An instruction is not a JSON object.",
@@ -1234,7 +1293,7 @@ inline void DiagnoseOneInstruction(const nlohmann::json &doc,
                 continue;
             CheckOperand(ctx, decoded, where, action, uop_index, key,
                          ScalarText(it.value()),
-                         kWritableKeys.count(key) != 0, out);
+                         kWritableKeys.count(key) != 0, out, index, name);
         }
         ++uop_index;
     }
@@ -1243,8 +1302,10 @@ inline void DiagnoseOneInstruction(const nlohmann::json &doc,
 inline void CheckMemory(const nlohmann::json &doc, const Context &ctx,
                         std::vector<Issue> &out) {
     auto add = [&](const std::string &loc, const std::string &problem,
-                   const std::string &fix) {
-        out.push_back({"Memory / " + loc, problem, fix});
+                   const std::string &fix, int nav_index = -1,
+                   const std::string &nav_name = "") {
+        out.push_back({"Memory / " + loc, problem, fix, "Memory",
+                       nav_index, nav_name});
     };
     if (!doc.contains("memory") || !doc["memory"].is_object() ||
         !doc["memory"].contains("segments") ||
@@ -1264,19 +1325,25 @@ inline void CheckMemory(const nlohmann::json &doc, const Context &ctx,
         seg.loc = seg.name.empty()
                       ? "segment #" + std::to_string(idx) + " (no name)"
                       : "segment '" + seg.name + "'";
+        // Segment issues navigate to this segment in the Memory tab's
+        // list (sel_segment).
+        auto sadd = [&](const std::string &l, const std::string &problem,
+                        const std::string &fix) {
+            add(l, problem, fix, idx, seg.name);
+        };
         if (s.is_object() && s.contains("start") && s.contains("end") &&
             TryWord(s["start"], seg.start) &&
             TryWord(s["end"], seg.end))
             seg.ok = true;
         else
-            add(seg.loc,
+            sadd(seg.loc,
                 "Segment '" + seg.name +
                     "' has a missing or unparsable \"start\" or \"end\".",
                 "Set \"start\" and \"end\" to addresses, e.g. "
                 "\"start\": 0, \"end\": 8191.");
         if (seg.ok) {
             if (seg.start > seg.end)
-                add(seg.loc,
+                sadd(seg.loc,
                     "Segment '" + seg.name + "' starts at " +
                         word_to_dec_string(seg.start) + " but ends at " +
                         word_to_dec_string(seg.end) +
@@ -1285,7 +1352,7 @@ inline void CheckMemory(const nlohmann::json &doc, const Context &ctx,
                     "e.g. \"start\": 0, \"end\": " +
                         word_to_dec_string(seg.end) + ".");
             else if (ctx.memory_size_ok && seg.end >= ctx.memory_size)
-                add(seg.loc,
+                sadd(seg.loc,
                     "Segment '" + seg.name + "' ends at " +
                         word_to_dec_string(seg.end) +
                         ", but memory.size is only " +
@@ -1305,6 +1372,8 @@ inline void CheckMemory(const nlohmann::json &doc, const Context &ctx,
                 continue;
             if (segs[i].start <= segs[j].end &&
                 segs[j].start <= segs[i].end)
+                // An overlap belongs to both segments; navigate to the
+                // first one.
                 add(segs[i].loc + " / " + segs[j].loc,
                     "Segments '" + segs[i].name + "' and '" +
                         segs[j].name + "' overlap (" +
@@ -1315,15 +1384,18 @@ inline void CheckMemory(const nlohmann::json &doc, const Context &ctx,
                     "Move one of the segments so their ranges no longer "
                     "overlap, e.g. set the second segment's \"start\" "
                     "above " +
-                        word_to_dec_string(segs[i].end) + ".");
+                        word_to_dec_string(segs[i].end) + ".",
+                    static_cast<int>(i), segs[i].name);
         }
 }
 
 inline void CheckPeripherals(const nlohmann::json &doc, const Context &ctx,
                              std::vector<Issue> &out) {
     auto add = [&](const std::string &loc, const std::string &problem,
-                   const std::string &fix) {
-        out.push_back({"Peripherals / " + loc, problem, fix});
+                   const std::string &fix, int nav_index = -1,
+                   const std::string &nav_name = "") {
+        out.push_back({"Peripherals / " + loc, problem, fix, "Peripherals",
+                       nav_index, nav_name});
     };
     if (!doc.contains("peripherals") || !doc["peripherals"].is_array())
         return;
@@ -1343,8 +1415,15 @@ inline void CheckPeripherals(const nlohmann::json &doc, const Context &ctx,
             name.empty() ? "peripheral #" + std::to_string(idx) +
                                " (no name)"
                          : "'" + name + "'";
+        // Peripheral issues (including ones about this peripheral's
+        // registers) navigate to this peripheral in the Peripherals
+        // tab's list (sel_peripheral).
+        auto padd = [&](const std::string &l, const std::string &problem,
+                        const std::string &fix) {
+            add(l, problem, fix, idx, name);
+        };
         if (!p.is_object()) {
-            add(loc, "A peripheral is not a JSON object.",
+            padd(loc, "A peripheral is not a JSON object.",
                 "Replace it with an object like { \"name\": \"Serial\", "
                 "\"type\": \"text_display\", \"address_start\": 0, "
                 "\"address_end\": 255 }.");
@@ -1352,21 +1431,21 @@ inline void CheckPeripherals(const nlohmann::json &doc, const Context &ctx,
             continue;
         }
         if (!p.contains("name") || !p["name"].is_string())
-            add(loc, "A peripheral has no \"name\".",
+            padd(loc, "A peripheral has no \"name\".",
                 "Give the peripheral a \"name\", e.g. \"Serial\".");
         else if (name.empty())
-            add(loc, "A peripheral has an empty \"name\".",
+            padd(loc, "A peripheral has an empty \"name\".",
                 "Give the peripheral a non-empty \"name\", e.g. "
                 "\"Serial\".");
         else if (!seen_names.insert(name).second)
-            add(loc,
+            padd(loc,
                 "Peripheral name '" + name + "' is used more than once.",
                 "Rename this peripheral to a name no other peripheral "
                 "uses.");
         const std::string type = JsonString(p, "type");
         if (type != "text_display" && type != "grid_display" &&
             type != "input" && type != "declarative")
-            add(loc,
+            padd(loc,
                 "Peripheral '" + name + "' has unknown type \"" + type +
                     "\".",
                 "Set \"type\" to one of: text_display, grid_display, "
@@ -1382,14 +1461,14 @@ inline void CheckPeripherals(const nlohmann::json &doc, const Context &ctx,
             try {
                 const int w = std::stoi(width_text);
                 if (w <= 0)
-                    add(loc,
+                    padd(loc,
                         "Peripheral '" + name + "' has grid width " +
                             std::to_string(w) +
                             ", but width must be at least 1.",
                         "Set \"parameters\": { \"width\": \"16\" } (or a "
                         "number) with a value of at least 1.");
             } catch (...) {
-                add(loc,
+                padd(loc,
                     "Peripheral '" + name +
                         "' has a non-numeric grid \"width\" (\"" +
                         width_text + "\").",
@@ -1409,7 +1488,7 @@ inline void CheckPeripherals(const nlohmann::json &doc, const Context &ctx,
             range.end = end;
             range.ok = true;
             if (start > end)
-                add(loc,
+                padd(loc,
                     "Peripheral '" + name + "' starts at " +
                         word_to_dec_string(start) + " but ends at " +
                         word_to_dec_string(end) +
@@ -1417,7 +1496,7 @@ inline void CheckPeripherals(const nlohmann::json &doc, const Context &ctx,
                     "Set \"address_start\" to an address at or below "
                     "\"address_end\", e.g. \"address_start\": 0.");
             else if (ctx.memory_size_ok && end >= ctx.memory_size)
-                add(loc,
+                padd(loc,
                     "Peripheral '" + name + "' ends at " +
                         word_to_dec_string(end) +
                         ", but memory.size is only " +
@@ -1428,7 +1507,7 @@ inline void CheckPeripherals(const nlohmann::json &doc, const Context &ctx,
                         word_to_dec_string(ctx.memory_size - 1) +
                         ", or increase \"memory.size\".");
         } else {
-            add(loc,
+            padd(loc,
                 "Peripheral '" + name +
                     "' has a missing or unparsable \"address_start\" or "
                     "\"address_end\".",
@@ -1448,33 +1527,33 @@ inline void CheckPeripherals(const nlohmann::json &doc, const Context &ctx,
                 if (!r.is_object())
                     continue;
                 if (!rname.empty() && !seen_reg_names.insert(rname).second)
-                    add(rloc,
+                    padd(rloc,
                         "Peripheral register '" + rname +
                             "' is defined more than once in peripheral '" +
                             name + "'.",
                         "Rename this register to a name no other register "
                         "of this peripheral uses.");
                 if (!JsonHasInt(r, "offset"))
-                    add(rloc,
+                    padd(rloc,
                         "Peripheral register '" + rname +
                             "' has no numeric \"offset\".",
                         "Set \"offset\" to a whole number, e.g. "
                         "\"offset\": 0.");
                 else if (JsonInt(r, "offset", 0) < 0)
-                    add(rloc,
+                    padd(rloc,
                         "Peripheral register '" + rname +
                             "' has a negative \"offset\".",
                         "Set \"offset\" to a number from 0.");
                 // The loader defaults a missing size_bytes to 1.
                 const int size = JsonInt(r, "size_bytes", 1);
                 if (r.contains("size_bytes") && !JsonHasInt(r, "size_bytes"))
-                    add(rloc,
+                    padd(rloc,
                         "Peripheral register '" + rname +
                             "' has a non-numeric \"size_bytes\".",
                         "Set \"size_bytes\" to a whole number from 1 to "
                         "16, e.g. \"size_bytes\": 1.");
                 else if (size < 1 || size > 16)
-                    add(rloc,
+                    padd(rloc,
                         "Peripheral register '" + rname + "' has "
                         "size_bytes " +
                             std::to_string(size) +
@@ -1485,7 +1564,7 @@ inline void CheckPeripherals(const nlohmann::json &doc, const Context &ctx,
                     JsonInt(r, "offset", 0) >= 0 && size >= 1 &&
                     static_cast<word_t>(JsonInt(r, "offset", 0) + size) >
                         region)
-                    add(rloc,
+                    padd(rloc,
                         "Peripheral register '" + rname +
                             "' (offset " +
                             std::to_string(JsonInt(r, "offset", 0)) +
@@ -1498,7 +1577,7 @@ inline void CheckPeripherals(const nlohmann::json &doc, const Context &ctx,
                             word_to_dec_string(region) + ".");
                 const std::string access = JsonString(r, "access", "rw");
                 if (access != "r" && access != "w" && access != "rw")
-                    add(rloc,
+                    padd(rloc,
                         "Peripheral register '" + rname +
                             "' has access \"" + access + "\".",
                         "Set \"access\" to \"r\", \"w\" or \"rw\".");
@@ -1522,6 +1601,8 @@ inline void CheckPeripherals(const nlohmann::json &doc, const Context &ctx,
                 continue;
             if (ranges[i].start <= ranges[j].end &&
                 ranges[j].start <= ranges[i].end)
+                // An overlap belongs to both peripherals; navigate to
+                // the first one.
                 add(ranges[i].loc + " / " + ranges[j].loc,
                     "Peripherals '" + ranges[i].name + "' and '" +
                         ranges[j].name + "' overlap (" +
@@ -1530,7 +1611,8 @@ inline void CheckPeripherals(const nlohmann::json &doc, const Context &ctx,
                         word_to_dec_string(ranges[j].start) + "-" +
                         word_to_dec_string(ranges[j].end) + ").",
                     "Move one of the peripherals so their address "
-                    "ranges no longer overlap.");
+                    "ranges no longer overlap.",
+                    static_cast<int>(i), ranges[i].name);
         }
 }
 
@@ -1546,7 +1628,8 @@ inline std::vector<Issue> Diagnose(const nlohmann::json &doc) {
              "The configuration document is not a JSON object.",
              "Load a JSON object with \"name\", \"data_bus\", "
              "\"address_bus\", \"memory\", \"registers\", \"alu\" and "
-             "\"instruction_set\" (see CONFIGURATION.md)."});
+             "\"instruction_set\" (see CONFIGURATION.md).",
+             "System", -1, ""});
         return out;
     }
     const Context ctx = BuildContext(doc);
@@ -1558,7 +1641,8 @@ inline std::vector<Issue> Diagnose(const nlohmann::json &doc) {
         out.push_back({"Instructions",
                        "The \"instruction_set\" object is missing.",
                        "Add \"instruction_set\": { \"opcode_width\": 8, "
-                       "\"instructions\": [...] }."});
+                       "\"instructions\": [...] }.",
+                       "Instructions", -1, ""});
     } else if (!doc["instruction_set"].contains("instructions") ||
                !doc["instruction_set"]["instructions"].is_array()) {
         out.push_back({"Instructions",
@@ -1566,7 +1650,8 @@ inline std::vector<Issue> Diagnose(const nlohmann::json &doc) {
                        "not an array.",
                        "Set \"instructions\" to an array of instruction "
                        "objects, e.g. [{ \"name\": \"ADD\", \"opcode\": "
-                       "0, \"encoding\": [0], \"microcode\": [...] }]."});
+                       "0, \"encoding\": [0], \"microcode\": [...] }].",
+                       "Instructions", -1, ""});
     } else {
         const Detail::InstMeta meta = Detail::ComputeInstMeta(doc);
         int index = 0;
