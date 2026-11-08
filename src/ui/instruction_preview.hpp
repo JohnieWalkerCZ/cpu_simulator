@@ -14,9 +14,16 @@
 //     actually does, including forcing dynamic when no latency is set
 //     and mapping an unknown/dynamic mode string to bottleneck when a
 //     latency is set)
-//   - warnings for unresolved references: @name not among the encoding
-//     operands, $REG not a register in the configuration, an ALU op name
-//     not defined in alu.operations, and missing required micro-op args.
+//   - warnings, but only the two latency ones: no latency set (so the
+//     mode is ignored and dynamic is forced), and the loader mapping a
+//     written latency mode to a different applied mode. Everything else
+//     that can be wrong with an instruction (unresolved @name / $REG
+//     references, an ALU op name not defined in alu.operations, missing
+//     required micro-op args, unknown actions, encoding/opcode mismatch,
+//     no microcode) is reported once, with a fix, by
+//     ConfigDiagnostics::DiagnoseInstruction -- the preview used to
+//     repeat those same complaints, so the panel showed each problem
+//     twice.
 
 #include <algorithm>
 #include <functional>
@@ -188,27 +195,10 @@ inline Preview Build(const nlohmann::json &doc, const nlohmann::json &inst) {
         }
     }
 
-    const std::unordered_set<std::string> reg_names =
-        CollectRegisterNames(doc);
-    const std::unordered_set<std::string> enc_names =
-        EncodingOperandNames(inst);
-    static const std::unordered_set<std::string> kSpecialRegs = {
-        "PC", "SP", "FLAGS", "NEXT_PC"};
-
-    // The first encoding element is the opcode literal, so it must match
-    // the instruction's opcode; anything else means the assembled binary
-    // would carry a different opcode than the executor dispatches on.
-    if (inst.contains("encoding") && inst["encoding"].is_array() &&
-        !inst["encoding"].empty() &&
-        inst["encoding"][0].is_number_integer() &&
-        inst["encoding"][0].get<int>() != inst.value("opcode", 0))
-        pv.warnings.push_back(
-            "Encoding starts with " +
-            std::to_string(inst["encoding"][0].get<int>()) +
-            " but the opcode is " +
-            std::to_string(inst.value("opcode", 0)) +
-            "; the first encoding element must be the opcode.");
-
+    // Preview-only warnings: the latency ones. Every other problem
+    // (bad references, unknown ALU op, missing args, unknown action,
+    // encoding/opcode mismatch, no microcode) is reported once, with a
+    // fix, by ConfigDiagnostics::DiagnoseInstruction.
     if (pv.latency <= 0)
         pv.warnings.push_back(
             "No instruction latency is set, so the latency mode is "
@@ -221,71 +211,20 @@ inline Preview Build(const nlohmann::json &doc, const nlohmann::json &inst) {
             "' when a latency is set (only strict/fixed, "
             "bottleneck/max and additive are honoured as written).");
 
-    if (!inst.contains("microcode") || !inst["microcode"].is_array() ||
-        inst["microcode"].empty())
-        pv.warnings.push_back("This instruction has no microcode.");
-
     if (inst.contains("microcode") && inst["microcode"].is_array()) {
-        int idx = 0;
         for (const auto &uop : inst["microcode"]) {
-            ++idx;
             UopPreview up;
             up.action = uop.value("action", "?");
-            const std::string where =
-                "Micro-op " + std::to_string(idx) + " (" + up.action + "): ";
-
-            // Unresolved-reference checks over every argument value.
-            if (uop.is_object()) {
-                for (auto it = uop.begin(); it != uop.end(); ++it) {
-                    if (it.key() == "action" || !it.value().is_string())
-                        continue;
-                    const std::string val = it.value().get<std::string>();
-                    if (val.size() > 1 && val[0] == '@') {
-                        const std::string token = val.substr(1);
-                        if (!enc_names.count(token))
-                            pv.warnings.push_back(
-                                where + "'" + val + "' in argument '" +
-                                it.key() +
-                                "' is not an encoding operand of this "
-                                "instruction.");
-                    } else if (val.size() > 1 && val[0] == '$') {
-                        const std::string reg = val.substr(1);
-                        if (!kSpecialRegs.count(reg) &&
-                            !reg_names.count(reg))
-                            pv.warnings.push_back(
-                                where + "'" + val + "' in argument '" +
-                                it.key() +
-                                "' is not a register in this "
-                                "configuration.");
-                    }
-                }
-            }
-
-            auto need = [&](const char *key) {
-                if (!HasArg(uop, key))
-                    pv.warnings.push_back(where + "is missing required "
-                                                   "argument '" +
-                                          key + "'.");
-            };
 
             if (up.action == "copy") {
-                need("source");
-                need("dest");
                 up.inputs = {"source = " + Arg(uop, "source")};
                 up.outputs = {Arg(uop, "dest")};
                 up.summary = Arg(uop, "source") + " -> " + Arg(uop, "dest");
             } else if (up.action == "alu") {
-                need("a");
-                need("op");
-                need("out");
                 const std::string op_name = Arg(uop, "op");
                 int op_latency = 1;
-                if (!op_name.empty() &&
-                    !AluOpLatency(doc, op_name, op_latency)) {
-                    pv.warnings.push_back(
-                        where + "ALU operation '" + op_name +
-                        "' is not defined in alu.operations.");
-                }
+                if (!op_name.empty())
+                    AluOpLatency(doc, op_name, op_latency);
                 up.latency = op_latency;
                 up.inputs = {"a = " + Arg(uop, "a")};
                 std::string call = op_name + "(" + Arg(uop, "a");
@@ -305,48 +244,34 @@ inline Preview Build(const nlohmann::json &doc, const nlohmann::json &inst) {
                     up.summary += "  [updates FLAGS]";
                 }
             } else if (up.action == "mem_read") {
-                need("addr");
-                need("out");
                 up.inputs = {"addr = " + Arg(uop, "addr")};
                 up.outputs = {Arg(uop, "out")};
                 up.summary =
                     "mem[" + Arg(uop, "addr") + "] -> " + Arg(uop, "out");
             } else if (up.action == "mem_write") {
-                need("addr");
-                need("data");
                 up.inputs = {"addr = " + Arg(uop, "addr"),
                              "data = " + Arg(uop, "data")};
                 up.outputs = {"memory[" + Arg(uop, "addr") + "]"};
                 up.summary = "mem[" + Arg(uop, "addr") +
                              "] <- " + Arg(uop, "data");
             } else if (up.action == "port_read") {
-                need("port");
-                need("out");
                 up.inputs = {"port = " + Arg(uop, "port")};
                 up.outputs = {Arg(uop, "out")};
                 up.summary = "port[" + Arg(uop, "port") +
                              "] -> " + Arg(uop, "out");
             } else if (up.action == "port_write") {
-                need("port");
-                need("data");
                 up.inputs = {"port = " + Arg(uop, "port"),
                              "data = " + Arg(uop, "data")};
                 up.outputs = {"port[" + Arg(uop, "port") + "]"};
                 up.summary = "port[" + Arg(uop, "port") +
                              "] <- " + Arg(uop, "data");
             } else if (up.action == "coproc_read") {
-                need("cp");
-                need("reg");
-                need("out");
                 up.inputs = {"cp = " + Arg(uop, "cp"),
                              "reg = " + Arg(uop, "reg")};
                 up.outputs = {Arg(uop, "out")};
                 up.summary = "coproc[" + Arg(uop, "cp") + ", " +
                              Arg(uop, "reg") + "] -> " + Arg(uop, "out");
             } else if (up.action == "coproc_write") {
-                need("cp");
-                need("reg");
-                need("data");
                 up.inputs = {"cp = " + Arg(uop, "cp"),
                              "reg = " + Arg(uop, "reg"),
                              "data = " + Arg(uop, "data")};
@@ -356,7 +281,6 @@ inline Preview Build(const nlohmann::json &doc, const nlohmann::json &inst) {
                              Arg(uop, "reg") +
                              "] <- " + Arg(uop, "data");
             } else if (up.action == "branch") {
-                need("target");
                 if (HasArg(uop, "condition"))
                     up.inputs.push_back("condition = " +
                                         Arg(uop, "condition"));
@@ -373,8 +297,6 @@ inline Preview Build(const nlohmann::json &doc, const nlohmann::json &inst) {
                 up.summary = "halt: stop the CPU";
             } else {
                 up.summary = "unknown action '" + up.action + "'";
-                pv.warnings.push_back(where + "has an unknown action '" +
-                                      up.action + "'.");
             }
             pv.uop_latency_sum += up.latency;
             pv.uops.push_back(std::move(up));

@@ -17,6 +17,7 @@
 #include "config_diagnostics.hpp"
 #include "core/config.hpp"
 #include "instruction_preview.hpp"
+#include "microop_editor.hpp"
 #include "ui_common.hpp"
 #include <algorithm>
 #include <cctype>
@@ -1010,8 +1011,10 @@ inline std::string JoinComma(const std::vector<std::string> &items) {
 }
 
 // Instruction preview: assembly form, encoding, per-micro-op
-// inputs -> outputs with cycle counts, effective latency, warnings.
-// Pure derivation lives in instruction_preview.hpp; this only renders it.
+// inputs -> outputs with cycle counts, effective latency, and the two
+// latency warnings. Pure derivation lives in instruction_preview.hpp;
+// this only renders it. Errors live in the Problems list below, not
+// here, so nothing is reported twice.
 inline void DrawInstructionPreview(const nlohmann::json &doc,
                                    const nlohmann::json &inst) {
     const InstructionPreview::Preview pv =
@@ -1121,6 +1124,71 @@ inline void DrawProblemsTab(ConfiguratorState &st) {
         ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s",
                            issue.problem.c_str());
         ImGui::TextWrapped("Fix: %s", issue.fix.c_str());
+    }
+}
+
+// One micro-op argument as a guided field: a combo over the valid
+// values for that slot (see microop_editor.hpp), plus a free-text
+// field whenever the current value is not among them -- a literal
+// (#...), or a value typed before the action changed -- so nothing
+// expressible in JSON becomes impossible.
+inline void EditMicroOpArg(ConfiguratorState &st, const nlohmann::json &doc,
+                           const nlohmann::json &inst, nlohmann::json &uop,
+                           const MicroOpEditor::ArgSpec &spec,
+                           const std::string &ubase) {
+    const std::string key = spec.key;
+    const std::string cur = uop.value(key, std::string(""));
+    if (spec.kind == MicroOpEditor::ArgKind::kBool) {
+        // Boolean flags are stored as the strings "true"/"false".
+        bool b = (cur == "true");
+        if (ImGui::Checkbox(spec.label.c_str(), &b)) {
+            uop[key] = b ? "true" : "false";
+            st.MarkDirty();
+        }
+        return;
+    }
+    std::vector<std::string> options;
+    bool literal_entry = false;
+    if (spec.kind == MicroOpEditor::ArgKind::kOperand) {
+        options = MicroOpEditor::OperandOptions(doc, inst, spec.writable);
+        literal_entry = true;
+    } else if (spec.kind == MicroOpEditor::ArgKind::kAluOp) {
+        options = MicroOpEditor::AluOpNames(doc);
+    } else { // kCondition
+        options = MicroOpEditor::ConditionOptions(doc);
+    }
+    std::vector<std::string> items = options;
+    if (literal_entry)
+        items.push_back("# (literal...)");
+    items.push_back("Custom...");
+    int idx = static_cast<int>(items.size()) - 1; // "Custom..." default
+    for (int i = 0; i < static_cast<int>(options.size()); ++i)
+        if (options[i] == cur) {
+            idx = i;
+            break;
+        }
+    std::vector<const char *> citems;
+    for (const auto &s : items)
+        citems.push_back(s.c_str());
+    if (ImGui::Combo(spec.label.c_str(), &idx, citems.data(),
+                     static_cast<int>(citems.size()))) {
+        if (idx < static_cast<int>(options.size())) {
+            uop[key] = options[idx];
+        } else if (literal_entry &&
+                   idx == static_cast<int>(options.size())) {
+            uop[key] = "#0"; // editable as free text below
+        } else {
+            uop[key] = ""; // blank custom value, typed below
+        }
+        st.MarkDirty();
+    }
+    if (std::find(options.begin(), options.end(), cur) == options.end()) {
+        std::string v = cur;
+        if (InputTextBuf(st, ("##custom_" + key).c_str(),
+                         ubase + "/arg/" + key, v)) {
+            uop[key] = v;
+            st.MarkDirty();
+        }
     }
 }
 
@@ -1278,34 +1346,61 @@ inline void DrawInstructionsTab(ConfiguratorState &st) {
             static const char *actions[] = {
                 "copy", "alu", "mem_read", "mem_write", "port_read",
                 "port_write", "coproc_read", "coproc_write", "branch", "halt"};
+            const std::string old_action = uop.value("action", "halt");
             EditJsonCombo(st, "Action", uop, "action", actions, 10, "halt");
-            ImGui::Text("Arguments (one per line, e.g. source = $PC):");
-            // Args are every key except "action", kept as strings.
-            nlohmann::json args = nlohmann::json::object();
-            for (auto it = uop.begin(); it != uop.end(); ++it)
-                if (it.key() != "action")
-                    args[it.key()] = it.value();
-            const std::string args_text = KeyValueMapToText(args);
-            std::string edited = args_text;
-            if (InputTextMultilineBuf(st, "##uopargs", ubase + "/args", edited,
-                                      ImVec2(-1, 90))) {
-                std::vector<std::pair<std::string, std::string>> pairs;
-                std::string error;
-                if (!ParseKeyValueLines(edited, pairs, error)) {
-                    st.action_msg = error;
-                    st.text_no_resync.insert(ubase + "/args");
-                } else {
-                    st.text_no_resync.erase(ubase + "/args");
-                    for (auto it = uop.begin(); it != uop.end();) {
-                        if (it.key() != "action")
-                            it = uop.erase(it);
-                        else
-                            ++it;
-                    }
-                    for (const auto &[k, v] : pairs)
-                        uop[k] = v;
-                    st.MarkDirty();
+            const std::string action = uop.value("action", "halt");
+            if (action != old_action) {
+                // The new action needs different arguments: drop the
+                // ones that do not belong to it, and prefill any
+                // missing required argument with its first valid
+                // picker option.
+                const std::vector<MicroOpEditor::ArgSpec> specs =
+                    MicroOpEditor::ArgSpecs(action);
+                std::unordered_set<std::string> keep;
+                for (const auto &s : specs)
+                    keep.insert(s.key);
+                for (auto it = uop.begin(); it != uop.end();) {
+                    if (it.key() != "action" && !keep.count(it.key()))
+                        it = uop.erase(it);
+                    else
+                        ++it;
                 }
+                for (const auto &s : specs)
+                    if (s.required && !uop.contains(s.key)) {
+                        const std::string def =
+                            MicroOpEditor::DefaultValue(doc, inst, s);
+                        if (!def.empty())
+                            uop[s.key] = def;
+                    }
+                st.ClearTextBufs();
+                st.MarkDirty();
+            }
+            // Guided arguments: exactly what this action needs, each
+            // as its own picker field. No free-text box to mistype
+            // an operand reference in.
+            const std::vector<MicroOpEditor::ArgSpec> specs =
+                MicroOpEditor::ArgSpecs(action);
+            for (const auto &spec : specs)
+                EditMicroOpArg(st, doc, inst, uop, spec, ubase);
+            if (specs.empty() && action != "halt")
+                ImGui::TextDisabled(
+                    "Unknown action: pick a known action above, or edit "
+                    "this micro-op in the raw JSON tab.");
+            // Arguments that are not part of this action (e.g. left
+            // over from the raw JSON tab) stay in the document but are
+            // not editable here; show them so nothing is hidden.
+            {
+                std::unordered_set<std::string> known;
+                for (const auto &s : specs)
+                    known.insert(s.key);
+                for (auto it = uop.begin(); it != uop.end(); ++it)
+                    if (it.key() != "action" && !known.count(it.key()))
+                        ImGui::TextDisabled(
+                            "Other argument (not used by this action): "
+                            "%s = %s",
+                            it.key().c_str(),
+                            ConfigDiagnostics::ScalarText(it.value())
+                                .c_str());
             }
             if (ImGui::Button("Remove this micro-op")) {
                 uops.erase(uops.begin() + st.sel_microop);

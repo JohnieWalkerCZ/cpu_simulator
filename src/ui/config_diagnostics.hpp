@@ -1116,8 +1116,9 @@ inline void DiagnoseOneInstruction(const nlohmann::json &doc,
         inst["microcode"].empty()) {
         add("The instruction has no microcode (it is missing or empty).",
             "Add at least one micro-op to \"microcode\", e.g. "
-            "{ \"action\": \"alu\", \"args\": { \"op\": \"ADD\", \"a\": "
-            "\"@src\", \"out\": \"@dest\" } }.");
+            "{ \"action\": \"alu\", \"op\": \"ADD\", \"a\": "
+            "\"@src\", \"out\": \"@dest\" } (arguments are flat keys on "
+            "the micro-op, not an \"args\" object).");
         return;
     }
     static const std::unordered_map<std::string,
@@ -1141,7 +1142,10 @@ inline void DiagnoseOneInstruction(const nlohmann::json &doc,
     static const std::unordered_set<std::string> kKnownActions = {
         "copy", "alu", "mem_read", "mem_write", "port_read", "port_write",
         "coproc_read", "coproc_write", "branch", "halt"};
-    int uop_index = 0;
+    // 1-based: the preview table numbers micro-ops from 1, so the
+    // Problems list must say "Micro-op 1" for the first one, not
+    // "Micro-op 0".
+    int uop_index = 1;
     for (const auto &uop : inst["microcode"]) {
         if (!uop.is_object()) {
             add("Micro-op " + std::to_string(uop_index) +
@@ -1188,7 +1192,7 @@ inline void DiagnoseOneInstruction(const nlohmann::json &doc,
                             action + ") is missing the required argument " +
                             "\"" + key + "\".",
                         "Add \"" + key + "\": " + ExampleForArg(key) +
-                            " to this micro-op's \"args\".");
+                            " to this micro-op.");
         if (action == "alu" && has_arg("op")) {
             const std::string op_name = ScalarText(args["op"]);
             if (!ctx.alu_names.count(op_name)) {

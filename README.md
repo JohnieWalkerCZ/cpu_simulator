@@ -223,9 +223,18 @@ for you:
 * **Instruction preview:** the Instructions tab shows the selected
   instruction as assembly (`ADD dest, src`), its encoding, a table of
   its micro-ops with inputs, outputs and cycle counts, the effective
-  latency under the selected mode, and warnings for unresolved
-  references (`@name` not in the encoding, `$REG` not a register,
-  unknown ALU op).
+  latency under the selected mode, and only the two latency warnings.
+  Anything else wrong with the instruction is reported exactly once,
+  with a fix, in the Problems list below the preview.
+* **Guided micro-op editor:** pick a micro-op's Action and the editor
+  shows exactly the arguments that action needs, each as its own
+  field. The ALU `op` is a combo of the defined ALU operations and
+  operand values are picked from a select of the valid references for
+  that slot (encoding operands, registers, literals via a
+  `# (literal...)` entry, `Custom...` for free text). Writable slots
+  offer only writable targets. Changing the Action drops arguments
+  that do not belong to the new action and prefills missing required
+  ones with their first valid option.
 * **Problems:** under the selected instruction's preview, a Problems
   list shows everything wrong with that instruction, each as a problem
   line followed by a concrete fix naming the field and value to change

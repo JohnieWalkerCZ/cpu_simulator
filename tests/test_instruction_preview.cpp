@@ -1,8 +1,11 @@
 // Tests for the configurator's instruction preview
 // (src/ui/instruction_preview.hpp): assembly form, per-micro-op
-// inputs/outputs, effective latency, and unresolved-reference warnings.
-// Runs from the tests/ working directory, so configs live at
-// ../configs/8bit.json.
+// inputs/outputs, effective latency, and the two latency warnings.
+// Errors (unresolved references, unknown ALU op, missing args, unknown
+// action, encoding/opcode mismatch, no microcode) are NOT preview
+// warnings anymore: they live once, with a fix, in the Problems list
+// (see test_config_diagnostics.cpp). Runs from the tests/ working
+// directory, so configs live at ../configs/8bit.json.
 #include "ui/instruction_preview.hpp"
 #include <cassert>
 #include <fstream>
@@ -120,31 +123,46 @@ int main() {
     }
 
     // Encoding/opcode mismatch: ADD with the opcode renumbered to 42
-    // but the encoding still starting with 5.
+    // but the encoding still starting with 5. The mismatch is NOT a
+    // preview warning anymore (the Problems list reports it once, with
+    // a fix); the only preview warning left is the latency one.
     {
         json inst = *FindInst(doc, "ADD");
         inst["opcode"] = 42;
         Preview p = Build(doc, inst);
-        // latency-ignored + encoding/opcode mismatch
-        assert(p.warnings.size() == 2);
-        bool found = false;
-        for (const auto &w : p.warnings)
-            if (w.find("opcode") != std::string::npos)
-                found = true;
-        assert(found);
+        assert(p.warnings.size() == 1);
+        assert(p.warnings[0].find("Encoding") == std::string::npos);
+        assert(p.warnings[0].find("opcode") == std::string::npos);
         inst["encoding"][0] = 42;
         p = Build(doc, inst);
-        assert(p.warnings.size() == 1); // only the latency warning left
+        assert(p.warnings.size() == 1); // only the latency warning
     }
 
-    // Broken references: @nope, $NOPE, unknown ALU op.
+    // Broken references: @nope, $NOPE, unknown ALU op. None of these
+    // is a preview warning anymore (the Problems list reports them);
+    // the preview still derives the table, and the unknown ALU op is
+    // still assumed to take 1 cycle.
     {
         json inst = json::parse(
             R"({"name":"BAD","opcode":98,"encoding":[98,"dest"],"microcode":[{"action":"alu","op":"NOPE","a":"@nope","b":"$NOPE","out":"@dest"},{"action":"copy","source":"@dest","dest":"$ALSO_NOPE"}]})");
         Preview p = Build(doc, inst);
-        // latency-ignored + @nope + $NOPE + unknown op + $ALSO_NOPE
-        assert(p.warnings.size() == 5);
+        assert(p.warnings.size() == 1); // only the latency warning
         assert(p.uops[0].latency == 1); // unknown op assumed 1 cycle
+    }
+
+    // Honza's screenshot case: instruction "PRG src", encoding
+    // [7, "src"], one alu micro-op with out = @sr (a typo for @src),
+    // latency 2, strict mode. The Preview must not warn about @sr at
+    // all (the Problems list reports it exactly once -- see
+    // test_config_diagnostics.cpp); with a latency set and a mode the
+    // loader honours, the preview has no warnings left.
+    {
+        json inst = json::parse(
+            R"({"name":"PRG","opcode":7,"encoding":[7,"src"],"latency":2,"latency_mode":"strict","microcode":[{"action":"alu","op":"ADD","a":"@src","out":"@sr"}]})");
+        Preview p = Build(doc, inst);
+        assert(p.warnings.empty());
+        assert(p.uops.size() == 1);
+        assert(p.effective_cycles == 2);
     }
 
     std::cout << "All instruction preview tests passed!" << std::endl;

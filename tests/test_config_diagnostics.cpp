@@ -145,6 +145,51 @@ int main() {
         assert(issues.size() == 1);
         assert(HasIssue(issues, "missing the required argument \"out\"",
                         "\"out\""));
+        // Micro-ops are numbered from 1, matching the preview table's
+        // "#" column (the first micro-op is "Micro-op 1", not 0).
+        assert(HasIssue(issues, "Micro-op 1 (alu)", "\"out\""));
+    }
+
+    // Numbering: a problem in the second micro-op says "Micro-op 2".
+    {
+        json inst = {{"name", "SECONDBAD"},
+                     {"opcode", 203},
+                     {"encoding", json::array({203, "dest", "src"})},
+                     {"microcode",
+                      json::array({{{"action", "halt"}},
+                                   {{"action", "alu"},
+                                    {"op", "ADD"},
+                                    {"a", "@src"}}})}};
+        json doc = DocWithInstructions(base, json::array({inst}));
+        std::vector<Issue> issues =
+            DiagnoseInstruction(doc, doc["instruction_set"]["instructions"][0]);
+        AssertProblemAndFix(issues);
+        assert(issues.size() == 1);
+        assert(HasIssue(issues, "Micro-op 2 (alu)", "\"out\""));
+    }
+
+    // Honza's screenshot case: instruction "PRG src", encoding
+    // [7, "src"], one alu micro-op with out = @sr (a typo for @src).
+    // The Problems list must report it exactly once (the Preview does
+    // not repeat it -- see test_instruction_preview.cpp).
+    {
+        json inst = {{"name", "PRG"},
+                     {"opcode", 7},
+                     {"encoding", json::array({7, "src"})},
+                     {"latency", 2},
+                     {"latency_mode", "strict"},
+                     {"microcode",
+                      json::array({{{"action", "alu"},
+                                    {"op", "ADD"},
+                                    {"a", "@src"},
+                                    {"out", "@sr"}}})}};
+        json doc = DocWithInstructions(base, json::array({inst}));
+        std::vector<Issue> issues =
+            DiagnoseInstruction(doc, doc["instruction_set"]["instructions"][0]);
+        AssertProblemAndFix(issues);
+        assert(issues.size() == 1);
+        assert(HasIssue(issues, "Micro-op 1 (alu)", "encoding"));
+        assert(HasIssue(issues, "@sr", "encoding operands: src"));
     }
 
     // ALU micro-op naming an operation that is not defined.

@@ -157,3 +157,11 @@ add_executable(test_config_diagnostics
 target_link_libraries(test_config_diagnostics PRIVATE cpu_core)
 add_test(NAME test_config_diagnostics COMMAND test_config_diagnostics)
 set_tests_properties(test_config_diagnostics PROPERTIES WORKING_DIRECTORY "${TEST_WORKING_DIR}")
+
+# 10. Micro-op Editor Test (configurator, no GUI needed)
+add_executable(test_microop_editor
+    tests/test_microop_editor.cpp
+)
+target_link_libraries(test_microop_editor PRIVATE cpu_core)
+add_test(NAME test_microop_editor COMMAND test_microop_editor)
+set_tests_properties(test_microop_editor PROPERTIES WORKING_DIRECTORY "${TEST_WORKING_DIR}")
