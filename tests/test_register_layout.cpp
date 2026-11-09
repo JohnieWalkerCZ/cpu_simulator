@@ -39,12 +39,14 @@ int main() {
             R"({"name":"R","width":8,"sub_registers":[{"name":"A","width":2,"offset":0},{"name":"B","width":2,"offset":4}]})");
         assert(FirstFreeOffset(reg, 1) == 2);
         assert(FirstFreeOffset(reg, 2) == 2);
-        assert(FirstFreeOffset(reg, 3) == 6);
+        assert(FirstFreeOffset(reg, 3) == -1);
         assert(FirstFreeOffset(reg, 8) == -1);
         assert(FirstFreeOffset(reg, 0) == -1);
         std::vector<SubSpan> spans = SubRegisterSpans(reg);
         assert(!spans[0].overlaps && !spans[1].overlaps);
         assert(!HasBit(spans[0], 2) && !HasBit(spans[1], 2));
+        reg["width"] = 9;
+        assert(FirstFreeOffset(reg, 3) == 6);
     }
 
     // Empty sub-register list: offset 0 is free.
