@@ -27,6 +27,8 @@ Hlavní programy `cpu_sim` a `cpu_configurator` se vytvoří ve výstupním adre
 
 ## Grafický editor konfigurací
 
+Samostatné návody: [ovládání konfigurátoru](docs/configurator-guide.cs.md) a [postup tvorby procesoru](docs/configurator-workflow.cs.md).
+
 Editor otevře prázdnou šablonu nebo existující soubor:
 
 ```bash

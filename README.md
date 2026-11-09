@@ -129,6 +129,8 @@ To compile the project, ensure your development environment has:
 
 ## Graphical Configurator
 
+See the [configurator guide](docs/configurator-guide.md) and [processor configuration workflow](docs/configurator-workflow.md).
+
 `cpu_configurator` is a graphical editor for CPU configurations. Instead of
 hand-editing JSON, you fill in forms and it writes the configuration file
 for you:
