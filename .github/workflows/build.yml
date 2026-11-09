@@ -2,6 +2,7 @@ name: Build
 
 on:
   push:
+    branches: ['**']
   pull_request:
   workflow_dispatch:
 
@@ -37,13 +38,13 @@ jobs:
             mingw-w64-x86_64-ninja
             mingw-w64-x86_64-SDL2
 
-      - name: Configure, build and test (Linux and macOS)
+      - name: Configure and build (Linux and macOS)
         if: runner.os != 'Windows'
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
           cmake --build build --parallel 2
 
-      - name: Configure, build and test (Windows)
+      - name: Configure and build (Windows)
         if: runner.os == 'Windows'
         shell: msys2 {0}
         run: |
@@ -87,3 +88,35 @@ jobs:
         if: runner.os == 'Windows'
         shell: msys2 {0}
         run: ctest --test-dir build --output-on-failure
+
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release files
+        run: |
+          mv artifacts/cpu-sandbox-ubuntu-latest/cpu-sandbox.tar.gz cpu-sandbox-linux.tar.gz
+          mv artifacts/cpu-sandbox-macos-latest/cpu-sandbox.tar.gz cpu-sandbox-macos.tar.gz
+          cd artifacts/cpu-sandbox-windows-latest
+          zip -r ../../cpu-sandbox-windows.zip .
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          gh release create "build-${RUN_ID}-${RUN_ATTEMPT}" \
+            --target "$COMMIT_SHA" \
+            --title "Build ${COMMIT_SHA:0:7}" \
+            --notes "Automatické sestavení commitu $COMMIT_SHA." \
+            cpu-sandbox-linux.tar.gz cpu-sandbox-macos.tar.gz cpu-sandbox-windows.zip
