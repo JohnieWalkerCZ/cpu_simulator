@@ -52,6 +52,7 @@ The simulator includes a dynamic multi-pass assembler, a microcoded instruction 
 │   ├── 8bit.json
 │   ├── 8bit_harvard.json
 │   ├── 16bit.json
+│   ├── 16bit_lab.json
 │   └── tiny4.json
 ├── CONFIGURATION.md                # Configuration reference manual
 ├── diagrams                        # Architecture and execution diagrams
@@ -95,6 +96,8 @@ The simulator includes a dynamic multi-pass assembler, a microcoded instruction 
 │   │   ├── ui_alu_monitor.hpp
 │   │   ├── ui_assembler.hpp
 │   │   ├── ui_common.hpp           # Shared GUIState, snapshots, bus highlighting
+│   │   ├── ui_configurator.hpp     # Graphical CPU configurator (forms + JSON view)
+│   │   ├── app_launcher.hpp        # Two-way launch helper (sim <-> configurator)
 │   │   ├── ui_control_tower.hpp
 │   │   ├── ui_cpu.hpp
 │   │   ├── ui_cpu_pointlist.hpp
@@ -104,6 +107,7 @@ The simulator includes a dynamic multi-pass assembler, a microcoded instruction 
 │   │   ├── ui_register_file.hpp
 │   │   └── ui_system_schematic.hpp
 │   └── main.cpp                    # SDL2/OpenGL/ImGui entry point & main loop
+│   └── configurator_main.cpp       # Entry point for the CPU configurator
 └── tests                           # Unit and integration test suites
     ├── test_alu_operations.cpp
     ├── test_assembler.cpp
@@ -178,7 +182,120 @@ To compile the project, ensure your development environment has:
    ```
 3. This generates the primary binaries inside the build output:
    * `cpu_sim`: The graphic visual sandbox environment.
+   * `cpu_configurator`: The graphical CPU configurator (see below).
    * `test_*`: Verification binaries mapping to each core engine component.
+
+---
+
+## Graphical Configurator
+
+`cpu_configurator` is a graphical editor for CPU configurations. Instead of
+hand-editing JSON, you fill in forms and it writes the configuration file
+for you:
+
+```bash
+./cpu_configurator                  # start with a blank valid template
+./cpu_configurator ../configs/8bit.json   # open an existing configuration
+```
+
+* **Top bar:** file path with Open / Save / Save As, preset buttons for the
+  shipped configurations (`tiny4`, `8bit`, `8bit_harvard`, `16bit`,
+  `16bit_lab`), Export JSON, and **Launch Simulator**.
+* **Tabs:** System, Registers (including recursive sub-registers with
+  offset or mask slicing), Memory, ALU (flags and operations, including the
+  `program` mini-language), Instructions (encoding and microcode),
+  Problems, Peripherals (including graphical AST hook blocks), and a raw JSON
+  view/edit tab.
+* **Validation:** the edited document is validated live with the same
+  `Config::from_json()` + `validate()` rules the simulator uses. The
+  status line shows whether the configuration is valid; Export and Launch
+  are blocked while it is invalid.
+* **ALU inputs are automatic:** an ALU operation's `a`, `b`, `c` are
+  bound at run time by the microcode `alu` action of the instruction
+  that uses the operation (its `a`/`b`/`c` arguments; the result width
+  comes from its `out`). They are not declared in the ALU tab.
+* **Latency mode lives on the instruction, not on the ALU operation:**
+  an ALU operation only has a `latency` in cycles. Each instruction has
+  a `latency` and a `latency_mode` (`dynamic` / `strict` / `bottleneck` /
+  `additive`); with no latency set the mode is ignored and the loader
+  forces dynamic. The Instructions tab explains the selected mode in
+  plain words and warns when it is ignored.
+* **Instruction preview:** the Instructions tab shows the selected
+  instruction as assembly (`ADD dest, src`), its encoding, a table of
+  its micro-ops with inputs, outputs and cycle counts, the effective
+  latency under the selected mode, and only the two latency warnings.
+  Anything else wrong with the instruction is reported exactly once,
+  with a fix, in the Problems list below the preview.
+* **Guided micro-op editor:** pick a micro-op's Action and the editor
+  shows exactly the arguments that action needs, each as its own
+  field. The ALU `op` is a combo of the defined ALU operations and
+  operand values are picked from a select of the valid references for
+  that slot (encoding operands, registers, literals via a
+  `# (literal...)` entry, `Custom...` for free text). Writable slots
+  offer only writable targets. Changing the Action drops arguments
+  that do not belong to the new action and prefills missing required
+  ones with their first valid option. Field labels sit above their
+  combos; an unset optional argument shows `(not set)` with no empty
+  box underneath. The microcode panes size to their content, so the
+  outer instruction editor scrolls instead of the inner boxes.
+* **Sub-register bit bar:** a register with sub-registers shows where
+  they sit inside it (bit 0 on the right, grey where nothing is
+  covered, red where two sub-registers overlap), and a new
+  sub-register starts at the first free bit.
+* **Peripheral hook blocks:** each `on_read`, `on_write` and
+  `tick_behavior` hook has a Blocks/Text toggle (default Blocks).
+  Blocks view is a Scratch-style editor: coloured, rounded blocks
+  (orange `if`, blue `assign`, green `call`) with their fields
+  inline; `if` blocks are C-shaped, with their then/else lists
+  nested inside. Drag a block by its header to move it between
+  lists (a yellow insertion line shows the drop position), or drag
+  a type in from the palette at the top of the hook editor; click a
+  palette button to append a node. Move, remove and "+ Add node"
+  controls stay as fallbacks. Text view is the pretty-printed JSON
+  box; both edit the same JSON. Parameters, internal state and
+  registers stay as text forms. Multiline text boxes are taller
+  throughout.
+* **Problems:** under the selected instruction's preview, a Problems
+  list shows everything wrong with that instruction, each as a problem
+  line followed by a concrete fix naming the field and value to change
+  (e.g. `encoding[0] is 6, but the opcode is 5` -- `Set "encoding":
+  [5, ...] so the first element equals "opcode"`). A Problems tab
+  lists all problems in the document grouped by area (System /
+  Registers / ALU / Instructions / Memory / Peripherals), and the top
+  status line summarizes the count and the first problem. The checks
+  mirror the loader's validation rules (`src/ui/config_diagnostics.hpp`).
+* **Undo / redo and confirmations:** every edit is undoable (up to 50
+  steps): Ctrl+Z to undo, Ctrl+Shift+Z / Ctrl+Y to redo, with Undo /
+  Redo buttons in the top bar. Every Remove button asks first, and
+  opening a file or closing the window with unsaved changes asks first
+  too.
+* **Clickable Problems and filters:** each problem row jumps to the tab
+  and item it belongs to. The instruction, register, ALU-operation and
+  peripheral lists have a name filter with an "N of M" count, and
+  instruction rows show "NAME (opcode N, M uops)".
+* **Duplicate, shortcuts, recent files:** Duplicate next to Remove
+  copies the selected item (fresh opcode/code for instructions and ALU
+  operations). Ctrl+S saves, Ctrl+D duplicates the selected item in the
+  active tab. The last 8 files are clickable buttons under Open.
+* **Tooltips and examples:** a grey "(?)" after the trickiest fields
+  explains it in one sentence. "Insert example peripheral" adds a small
+  declarative timer; "Insert example hook" adds the MathCoProcessor-style
+  sample to a hook.
+* **Window and readability:** default window 1600x1000, with a UI scale
+  combo (0.9x / 1.0x / 1.25x / 1.5x) in the top bar, persisted with the
+  recent files in `~/.config/cpu_configurator/settings.txt`.
+* **Round-trip:** the configurator edits the JSON document itself, so a
+  loaded file saved untouched keeps its content (values, hex strings such
+  as `"0x2000"`, nested sub-registers and raw peripheral JSON). Saving
+  re-serializes with 2-space indentation, which normalizes key order and
+  line breaks.
+
+Two-way launch: **Launch Simulator** in the configurator saves the current
+configuration and starts `cpu_sim` with it; **Edit in Configurator** in the
+simulator's Control Tower starts `cpu_configurator` with the configuration
+the simulator loaded. Both buttons look for the sibling binary next to the
+running executable and report a clear message when it has not been built
+yet.
 
 ---
 
@@ -193,7 +310,7 @@ Start the GUI executable by passing the relative path to an architecture configu
 ### Visual Interface Guide
 Once loaded, the graphical workspace organizes execution monitoring into specialized windows:
 
-* **Control Tower:** Provides physical clock speed control, execution modes (run by whole instructions or single microcode clock cycles), and state triggers.
+* **Control Tower:** Provides physical clock speed control, execution modes (run by whole instructions or single microcode clock cycles), and state triggers. It also shows the loaded configuration file and an **Edit in Configurator** button, which opens the configuration in `cpu_configurator`.
 * **Micro-op Pipeline:** Highlights the current microcode step in the control unit pipeline. Visualizes active register arguments, instruction bit layouts, the active execution latency mode (Strict, Bottleneck, Additive, or Dynamic), and provides a visual progress bar indicating elapsed execution clock cycles against structural targets.
 * **Live Assembler:** Allows you to write and modify custom assembly programs on the fly. The built-in reference table displays mnemonic formats and expected parameter types derived from the loaded schema.
 * **Register File:** Monitors runtime values in hexadecimal, decimal, and bitwise forms across all physical registers and virtual sub-registers.

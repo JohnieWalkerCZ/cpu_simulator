@@ -7,10 +7,19 @@ include(FetchContent)
 
 FetchContent_Declare(
     nlohmann_json_single
-    URL "https://raw.githubusercontent.com/nlohmann/json/develop/include/nlohmann/json.hpp"
+    # Pinned release asset: the single-header amalgamation. The develop
+    # branch URL used to point at the same file, but upstream split
+    # json.hpp into many headers, so it no longer compiles standalone.
+    URL "https://github.com/nlohmann/json/releases/download/v3.12.0/json.hpp"
     DOWNLOAD_NO_EXTRACT TRUE
 )
 FetchContent_MakeAvailable(nlohmann_json_single)
+
+# The single-header download lands as <src>/json.hpp, but the code includes
+# <nlohmann/json.hpp>: mirror it into a nlohmann/ subdirectory so the
+# include resolves without a system-installed nlohmann/json package.
+file(COPY ${nlohmann_json_single_SOURCE_DIR}/json.hpp
+     DESTINATION ${nlohmann_json_single_SOURCE_DIR}/nlohmann)
 
 add_library(nlohmann_json INTERFACE)
 target_include_directories(nlohmann_json INTERFACE ${nlohmann_json_single_SOURCE_DIR})
@@ -71,6 +80,11 @@ add_executable(cpu_sim
 )
 target_link_libraries(cpu_sim cpu_core imgui SDL2::SDL2 ${OPENGL_LIBRARIES} ${CMAKE_DL_LIBS})
 
+add_executable(cpu_configurator
+    src/configurator_main.cpp
+)
+target_link_libraries(cpu_configurator cpu_core imgui SDL2::SDL2 ${OPENGL_LIBRARIES} ${CMAKE_DL_LIBS})
+
 enable_testing()
 
 set(TEST_WORKING_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tests")
@@ -127,3 +141,69 @@ add_executable(test_cpu_integration
 target_link_libraries(test_cpu_integration PRIVATE cpu_core)
 add_test(NAME test_cpu_integration COMMAND test_cpu_integration)
 set_tests_properties(test_cpu_integration PROPERTIES WORKING_DIRECTORY "${TEST_WORKING_DIR}")
+
+# 8. Instruction Preview Test (configurator, no GUI needed)
+add_executable(test_instruction_preview
+    tests/test_instruction_preview.cpp
+)
+target_link_libraries(test_instruction_preview PRIVATE cpu_core)
+add_test(NAME test_instruction_preview COMMAND test_instruction_preview)
+set_tests_properties(test_instruction_preview PROPERTIES WORKING_DIRECTORY "${TEST_WORKING_DIR}")
+
+# 9. Config Diagnostics Test
+add_executable(test_config_diagnostics
+    tests/test_config_diagnostics.cpp
+)
+target_link_libraries(test_config_diagnostics PRIVATE cpu_core)
+add_test(NAME test_config_diagnostics COMMAND test_config_diagnostics)
+set_tests_properties(test_config_diagnostics PROPERTIES WORKING_DIRECTORY "${TEST_WORKING_DIR}")
+
+# 10. Micro-op Editor Test (configurator, no GUI needed)
+add_executable(test_microop_editor
+    tests/test_microop_editor.cpp
+)
+target_link_libraries(test_microop_editor PRIVATE cpu_core)
+add_test(NAME test_microop_editor COMMAND test_microop_editor)
+set_tests_properties(test_microop_editor PROPERTIES WORKING_DIRECTORY "${TEST_WORKING_DIR}")
+
+add_executable(test_register_layout
+    tests/test_register_layout.cpp
+)
+target_link_libraries(test_register_layout PRIVATE cpu_core)
+add_test(NAME test_register_layout COMMAND test_register_layout)
+set_tests_properties(test_register_layout PROPERTIES WORKING_DIRECTORY "${TEST_WORKING_DIR}")
+
+add_executable(test_hook_editor
+    tests/test_hook_editor.cpp
+)
+target_link_libraries(test_hook_editor PRIVATE cpu_core)
+add_test(NAME test_hook_editor COMMAND test_hook_editor)
+set_tests_properties(test_hook_editor PROPERTIES WORKING_DIRECTORY "${TEST_WORKING_DIR}")
+
+add_executable(test_undo_history
+    tests/test_undo_history.cpp
+)
+target_link_libraries(test_undo_history PRIVATE cpu_core)
+add_test(NAME test_undo_history COMMAND test_undo_history)
+set_tests_properties(test_undo_history PROPERTIES WORKING_DIRECTORY "${TEST_WORKING_DIR}")
+
+add_executable(test_app_settings
+    tests/test_app_settings.cpp
+)
+target_link_libraries(test_app_settings PRIVATE cpu_core)
+add_test(NAME test_app_settings COMMAND test_app_settings)
+set_tests_properties(test_app_settings PROPERTIES WORKING_DIRECTORY "${TEST_WORKING_DIR}")
+
+add_executable(test_duplicate
+    tests/test_duplicate.cpp
+)
+target_link_libraries(test_duplicate PRIVATE cpu_core)
+add_test(NAME test_duplicate COMMAND test_duplicate)
+set_tests_properties(test_duplicate PROPERTIES WORKING_DIRECTORY "${TEST_WORKING_DIR}")
+
+add_executable(test_example_items
+    tests/test_example_items.cpp
+)
+target_link_libraries(test_example_items PRIVATE cpu_core)
+add_test(NAME test_example_items COMMAND test_example_items)
+set_tests_properties(test_example_items PROPERTIES WORKING_DIRECTORY "${TEST_WORKING_DIR}")

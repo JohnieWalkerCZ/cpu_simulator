@@ -1,351 +1,946 @@
 {
-  "name": "16-Bit RISC Lab",
-  "data_bus": { "width": 16 },
-  "address_bus": { "width": 16 },
-  "memory": {
-    "size": 65536,
-    "architecture": "von_neumann",
-    "endianness": "little",
-    "segments": [
-      { "name": "ROM",   "start": "0x0000", "end": "0x7FFF", "R": true, "W": false, "X": true },
-      { "name": "RAM",   "start": "0x8000", "end": "0xEFFF", "R": true, "W": true,  "X": false },
-      { "name": "MMIO",  "start": "0xF000", "end": "0xFDFF", "R": true, "W": true,  "X": false },
-      { "name": "STACK", "start": "0xFE00", "end": "0xFFFF", "R": true, "W": true,  "X": false }
-    ]
-  },
-  "registers": {
-    "general_purpose": [
-      {
-        "name": "R0", "width": 16, "initial": 0,
-        "sub_registers": [
-          { "name": "R0H", "width": 8, "offset": 8 },
-          { "name": "R0L", "width": 8, "offset": 0 }
-        ]
-      },
-      {
-        "name": "R1", "width": 16, "initial": 0,
-        "sub_registers": [
-          { "name": "R1H", "width": 8, "offset": 8 },
-          { "name": "R1L", "width": 8, "offset": 0 }
-        ]
-      },
-      { "name": "R2", "width": 16, "initial": 0 },
-      { "name": "R3", "width": 16, "initial": 0 },
-      { "name": "R4", "width": 16, "initial": 0 },
-      { "name": "R5", "width": 16, "initial": 0 },
-      { "name": "R6", "width": 16, "initial": 0 },
-      { "name": "R7", "width": 16, "initial": 0 }
-    ],
-    "special": [
-      { "name": "PC", "width": 16, "initial": 0, "role": "program_counter" },
-      { "name": "SP", "width": 16, "initial": 65534, "role": "stack_pointer" },
-      { "name": "FLAGS", "width": 16, "initial": 0, "role": "status_flags" }
-    ]
+  "address_bus": {
+    "width": 16
   },
   "alu": {
     "flags": [
-      { "name": "Z", "bit": 0, "type": "zero" },
-      { "name": "C", "bit": 1, "type": "carry" },
-      { "name": "O", "bit": 2, "type": "overflow" },
-      { "name": "N", "bit": 3, "type": "negative" }
+      {
+        "bit": 0,
+        "name": "Z",
+        "type": "zero"
+      },
+      {
+        "bit": 1,
+        "name": "C",
+        "type": "carry"
+      },
+      {
+        "bit": 2,
+        "name": "O",
+        "type": "overflow"
+      },
+      {
+        "bit": 3,
+        "name": "N",
+        "type": "negative"
+      }
     ],
     "operations": [
       {
-        "name": "ADD", "code": 1, "expression": "a + b",
-        "flag_rules": { "Z": "result_zero", "C": "carry_add", "O": "overflow_add", "N": "result_negative" }
+        "code": 1,
+        "expression": "a + b",
+        "flag_rules": {
+          "C": "carry_add",
+          "N": "result_negative",
+          "O": "overflow_add",
+          "Z": "result_zero"
+        },
+        "name": "ADD"
       },
       {
-        "name": "SUB", "code": 2, "expression": "a - b",
-        "flag_rules": { "Z": "result_zero", "C": "carry_sub", "O": "overflow_sub", "N": "result_negative" }
+        "code": 2,
+        "expression": "a - b",
+        "flag_rules": {
+          "C": "carry_sub",
+          "N": "result_negative",
+          "O": "overflow_sub",
+          "Z": "result_zero"
+        },
+        "name": "SUB"
       },
       {
-        "name": "MUL", "code": 3, "expression": "a * b", "latency": 4,
-        "flag_rules": { "Z": "result_zero", "N": "result_negative" }
+        "code": 3,
+        "expression": "a * b",
+        "flag_rules": {
+          "N": "result_negative",
+          "Z": "result_zero"
+        },
+        "latency": 4,
+        "name": "MUL"
       },
       {
-        "name": "DIV", "code": 4, "expression": "a / b", "latency": 8,
-        "flag_rules": { "Z": "result_zero", "N": "result_negative" }
+        "code": 4,
+        "expression": "a / b",
+        "flag_rules": {
+          "N": "result_negative",
+          "Z": "result_zero"
+        },
+        "latency": 8,
+        "name": "DIV"
       },
       {
-        "name": "AND", "code": 5, "expression": "a & b",
-        "flag_rules": { "Z": "result_zero", "N": "result_negative" }
+        "code": 5,
+        "expression": "a & b",
+        "flag_rules": {
+          "N": "result_negative",
+          "Z": "result_zero"
+        },
+        "name": "AND"
       },
       {
-        "name": "OR",  "code": 6, "expression": "a | b",
-        "flag_rules": { "Z": "result_zero", "N": "result_negative" }
+        "code": 6,
+        "expression": "a | b",
+        "flag_rules": {
+          "N": "result_negative",
+          "Z": "result_zero"
+        },
+        "name": "OR"
       },
       {
-        "name": "XOR", "code": 7, "expression": "a ^ b",
-        "flag_rules": { "Z": "result_zero", "N": "result_negative" }
+        "code": 7,
+        "expression": "a ^ b",
+        "flag_rules": {
+          "N": "result_negative",
+          "Z": "result_zero"
+        },
+        "name": "XOR"
       },
       {
-        "name": "SHL", "code": 8, "expression": "a << b",
-        "flag_rules": { "Z": "result_zero", "N": "result_negative" }
+        "code": 8,
+        "expression": "a << b",
+        "flag_rules": {
+          "N": "result_negative",
+          "Z": "result_zero"
+        },
+        "name": "SHL"
       },
       {
-        "name": "SHR", "code": 9, "expression": "a >> b",
-        "flag_rules": { "Z": "result_zero", "N": "result_negative" }
+        "code": 9,
+        "expression": "a >> b",
+        "flag_rules": {
+          "N": "result_negative",
+          "Z": "result_zero"
+        },
+        "name": "SHR"
       },
       {
-        "name": "NOT", "code": 10, "expression": "~a",
-        "flag_rules": { "Z": "result_zero", "N": "result_negative" }
+        "code": 10,
+        "expression": "~a",
+        "flag_rules": {
+          "N": "result_negative",
+          "Z": "result_zero"
+        },
+        "name": "NOT"
+      },
+      {
+        "code": 0,
+        "latency": 1,
+        "name": "PRG",
+        "program": [
+          "acc = 0;",
+          "for i in 0..(a+1) {",
+          "   acc = acc + i;",
+          "}",
+          "",
+          "return acc;"
+        ]
       }
     ]
+  },
+  "data_bus": {
+    "width": 16
   },
   "instruction_set": {
     "instructions": [
       {
+        "encoding": [
+          0
+        ],
+        "microcode": [
+          {
+            "action": "copy",
+            "dest": "$PC",
+            "source": "$PC"
+          }
+        ],
         "name": "NOP",
-        "opcode": 0,
-        "encoding": [0],
-        "microcode": [ { "action": "copy", "source": "$PC", "dest": "$PC" } ]
+        "opcode": 0
       },
       {
+        "encoding": [
+          255
+        ],
+        "microcode": [
+          {
+            "action": "halt"
+          }
+        ],
         "name": "HLT",
-        "opcode": 255,
-        "encoding": [255],
-        "microcode": [ { "action": "halt" } ]
+        "opcode": 255
       },
       {
+        "encoding": [
+          16,
+          "dest",
+          "src"
+        ],
+        "microcode": [
+          {
+            "action": "copy",
+            "dest": "@dest",
+            "source": "@src"
+          }
+        ],
         "name": "MOV",
-        "opcode": 16,
-        "encoding": [16, "dest", "src"],
-        "microcode": [ { "action": "copy", "source": "@src", "dest": "@dest" } ]
+        "opcode": 16
       },
       {
+        "encoding": [
+          17,
+          "dest",
+          "imm16"
+        ],
+        "microcode": [
+          {
+            "action": "copy",
+            "dest": "@dest",
+            "source": "@imm16"
+          }
+        ],
         "name": "LDI",
-        "opcode": 17,
-        "encoding": [17, "dest", "imm16"],
-        "microcode": [ { "action": "copy", "source": "@imm16", "dest": "@dest" } ]
+        "opcode": 17
       },
       {
+        "encoding": [
+          18,
+          "dest",
+          "addr_reg"
+        ],
+        "microcode": [
+          {
+            "action": "mem_read",
+            "addr": "@addr_reg",
+            "out": "@dest"
+          }
+        ],
         "name": "LOAD",
-        "opcode": 18,
-        "encoding": [18, "dest", "addr_reg"],
-        "microcode": [ { "action": "mem_read", "addr": "@addr_reg", "out": "@dest" } ]
+        "opcode": 18
       },
       {
+        "encoding": [
+          19,
+          "src",
+          "addr_reg"
+        ],
+        "microcode": [
+          {
+            "action": "mem_write",
+            "addr": "@addr_reg",
+            "data": "@src"
+          }
+        ],
         "name": "STORE",
-        "opcode": 19,
-        "encoding": [19, "src", "addr_reg"],
-        "microcode": [ { "action": "mem_write", "addr": "@addr_reg", "data": "@src" } ]
+        "opcode": 19
       },
       {
+        "encoding": [
+          32,
+          "dest",
+          "src"
+        ],
+        "microcode": [
+          {
+            "a": "@dest",
+            "action": "alu",
+            "b": "@src",
+            "op": "ADD",
+            "out": "@dest",
+            "update_flags": "true"
+          }
+        ],
         "name": "ADD",
-        "opcode": 32,
-        "encoding": [32, "dest", "src"],
-        "microcode": [ { "action": "alu", "op": "ADD", "a": "@dest", "b": "@src", "out": "@dest", "update_flags": "true" } ]
+        "opcode": 32
       },
       {
+        "encoding": [
+          33,
+          "dest",
+          "imm16"
+        ],
+        "microcode": [
+          {
+            "a": "@dest",
+            "action": "alu",
+            "b": "@imm16",
+            "op": "ADD",
+            "out": "@dest",
+            "update_flags": "true"
+          }
+        ],
         "name": "ADDI",
-        "opcode": 33,
-        "encoding": [33, "dest", "imm16"],
-        "microcode": [ { "action": "alu", "op": "ADD", "a": "@dest", "b": "@imm16", "out": "@dest", "update_flags": "true" } ]
+        "opcode": 33
       },
       {
+        "encoding": [
+          34,
+          "dest",
+          "src"
+        ],
+        "microcode": [
+          {
+            "a": "@dest",
+            "action": "alu",
+            "b": "@src",
+            "op": "SUB",
+            "out": "@dest",
+            "update_flags": "true"
+          }
+        ],
         "name": "SUB",
-        "opcode": 34,
-        "encoding": [34, "dest", "src"],
-        "microcode": [ { "action": "alu", "op": "SUB", "a": "@dest", "b": "@src", "out": "@dest", "update_flags": "true" } ]
+        "opcode": 34
       },
       {
+        "encoding": [
+          35,
+          "dest",
+          "imm16"
+        ],
+        "microcode": [
+          {
+            "a": "@dest",
+            "action": "alu",
+            "b": "@imm16",
+            "op": "SUB",
+            "out": "@dest",
+            "update_flags": "true"
+          }
+        ],
         "name": "SUBI",
-        "opcode": 35,
-        "encoding": [35, "dest", "imm16"],
-        "microcode": [ { "action": "alu", "op": "SUB", "a": "@dest", "b": "@imm16", "out": "@dest", "update_flags": "true" } ]
+        "opcode": 35
       },
       {
+        "encoding": [
+          36,
+          "dest",
+          "src"
+        ],
+        "microcode": [
+          {
+            "a": "@dest",
+            "action": "alu",
+            "b": "@src",
+            "op": "MUL",
+            "out": "@dest",
+            "update_flags": "true"
+          }
+        ],
         "name": "MUL",
-        "opcode": 36,
-        "encoding": [36, "dest", "src"],
-        "microcode": [ { "action": "alu", "op": "MUL", "a": "@dest", "b": "@src", "out": "@dest", "update_flags": "true" } ]
+        "opcode": 36
       },
       {
+        "encoding": [
+          48,
+          "dest",
+          "src"
+        ],
+        "microcode": [
+          {
+            "a": "@dest",
+            "action": "alu",
+            "b": "@src",
+            "op": "AND",
+            "out": "@dest",
+            "update_flags": "true"
+          }
+        ],
         "name": "AND",
-        "opcode": 48,
-        "encoding": [48, "dest", "src"],
-        "microcode": [ { "action": "alu", "op": "AND", "a": "@dest", "b": "@src", "out": "@dest", "update_flags": "true" } ]
+        "opcode": 48
       },
       {
+        "encoding": [
+          49,
+          "dest",
+          "src"
+        ],
+        "microcode": [
+          {
+            "a": "@dest",
+            "action": "alu",
+            "b": "@src",
+            "op": "OR",
+            "out": "@dest",
+            "update_flags": "true"
+          }
+        ],
         "name": "OR",
-        "opcode": 49,
-        "encoding": [49, "dest", "src"],
-        "microcode": [ { "action": "alu", "op": "OR", "a": "@dest", "b": "@src", "out": "@dest", "update_flags": "true" } ]
+        "opcode": 49
       },
       {
+        "encoding": [
+          50,
+          "dest",
+          "src"
+        ],
+        "microcode": [
+          {
+            "a": "@dest",
+            "action": "alu",
+            "b": "@src",
+            "op": "XOR",
+            "out": "@dest",
+            "update_flags": "true"
+          }
+        ],
         "name": "XOR",
-        "opcode": 50,
-        "encoding": [50, "dest", "src"],
-        "microcode": [ { "action": "alu", "op": "XOR", "a": "@dest", "b": "@src", "out": "@dest", "update_flags": "true" } ]
+        "opcode": 50
       },
       {
+        "encoding": [
+          51,
+          "dest",
+          "imm16"
+        ],
+        "microcode": [
+          {
+            "a": "@dest",
+            "action": "alu",
+            "b": "@imm16",
+            "op": "SHL",
+            "out": "@dest",
+            "update_flags": "true"
+          }
+        ],
         "name": "SHL",
-        "opcode": 51,
-        "encoding": [51, "dest", "imm16"],
-        "microcode": [ { "action": "alu", "op": "SHL", "a": "@dest", "b": "@imm16", "out": "@dest", "update_flags": "true" } ]
+        "opcode": 51
       },
       {
+        "encoding": [
+          52,
+          "dest",
+          "imm16"
+        ],
+        "microcode": [
+          {
+            "a": "@dest",
+            "action": "alu",
+            "b": "@imm16",
+            "op": "SHR",
+            "out": "@dest",
+            "update_flags": "true"
+          }
+        ],
         "name": "SHR",
-        "opcode": 52,
-        "encoding": [52, "dest", "imm16"],
-        "microcode": [ { "action": "alu", "op": "SHR", "a": "@dest", "b": "@imm16", "out": "@dest", "update_flags": "true" } ]
+        "opcode": 52
       },
       {
+        "encoding": [
+          64,
+          "address"
+        ],
+        "microcode": [
+          {
+            "action": "branch",
+            "target": "@address"
+          }
+        ],
         "name": "JMP",
-        "opcode": 64,
-        "encoding": [64, "address"],
-        "microcode": [ { "action": "branch", "target": "@address" } ]
+        "opcode": 64
       },
       {
+        "encoding": [
+          65,
+          "address"
+        ],
+        "microcode": [
+          {
+            "action": "branch",
+            "condition": "Z",
+            "target": "@address"
+          }
+        ],
         "name": "JZ",
-        "opcode": 65,
-        "encoding": [65, "address"],
-        "microcode": [ { "action": "branch", "condition": "Z", "target": "@address" } ]
+        "opcode": 65
       },
       {
+        "encoding": [
+          66,
+          "address"
+        ],
+        "microcode": [
+          {
+            "action": "branch",
+            "condition": "!Z",
+            "target": "@address"
+          }
+        ],
         "name": "JNZ",
-        "opcode": 66,
-        "encoding": [66, "address"],
-        "microcode": [ { "action": "branch", "condition": "!Z", "target": "@address" } ]
+        "opcode": 66
       },
       {
+        "encoding": [
+          67,
+          "address"
+        ],
+        "microcode": [
+          {
+            "action": "branch",
+            "condition": "C",
+            "target": "@address"
+          }
+        ],
         "name": "JC",
-        "opcode": 67,
-        "encoding": [67, "address"],
-        "microcode": [ { "action": "branch", "condition": "C", "target": "@address" } ]
+        "opcode": 67
       },
       {
+        "encoding": [
+          80,
+          "src"
+        ],
+        "microcode": [
+          {
+            "a": "$SP",
+            "action": "alu",
+            "b": "#WORD_SIZE",
+            "op": "SUB",
+            "out": "$SP"
+          },
+          {
+            "action": "mem_write",
+            "addr": "$SP",
+            "data": "@src"
+          }
+        ],
         "name": "PUSH",
-        "opcode": 80,
-        "encoding": [80, "src"],
-        "microcode": [
-          { "action": "alu", "op": "SUB", "a": "$SP", "b": "#WORD_SIZE", "out": "$SP" },
-          { "action": "mem_write", "addr": "$SP", "data": "@src" }
-        ]
+        "opcode": 80
       },
       {
+        "encoding": [
+          81,
+          "dest"
+        ],
+        "microcode": [
+          {
+            "action": "mem_read",
+            "addr": "$SP",
+            "out": "@dest"
+          },
+          {
+            "a": "$SP",
+            "action": "alu",
+            "b": "#WORD_SIZE",
+            "op": "ADD",
+            "out": "$SP"
+          }
+        ],
         "name": "POP",
-        "opcode": 81,
-        "encoding": [81, "dest"],
-        "microcode": [
-          { "action": "mem_read", "addr": "$SP", "out": "@dest" },
-          { "action": "alu", "op": "ADD", "a": "$SP", "b": "#WORD_SIZE", "out": "$SP" }
-        ]
+        "opcode": 81
       },
       {
+        "encoding": [
+          82,
+          "address"
+        ],
+        "microcode": [
+          {
+            "a": "$SP",
+            "action": "alu",
+            "b": "#ADDR_SIZE",
+            "op": "SUB",
+            "out": "$SP"
+          },
+          {
+            "action": "mem_write",
+            "addr": "$SP",
+            "data": "$NEXT_PC"
+          },
+          {
+            "action": "branch",
+            "target": "@address"
+          }
+        ],
         "name": "CALL",
-        "opcode": 82,
-        "encoding": [82, "address"],
-        "microcode": [
-          { "action": "alu", "op": "SUB", "a": "$SP", "b": "#ADDR_SIZE", "out": "$SP" },
-          { "action": "mem_write", "addr": "$SP", "data": "$NEXT_PC" },
-          { "action": "branch", "target": "@address" }
-        ]
+        "opcode": 82
       },
       {
-        "name": "RET",
-        "opcode": 83,
-        "encoding": [83],
+        "encoding": [
+          83
+        ],
         "microcode": [
-          { "action": "mem_read", "addr": "$SP", "out": "$PC" },
-          { "action": "alu", "op": "ADD", "a": "$SP", "b": "#ADDR_SIZE", "out": "$SP" }
-        ]
+          {
+            "action": "mem_read",
+            "addr": "$SP",
+            "out": "$PC"
+          },
+          {
+            "a": "$SP",
+            "action": "alu",
+            "b": "#ADDR_SIZE",
+            "op": "ADD",
+            "out": "$SP"
+          }
+        ],
+        "name": "RET",
+        "opcode": 83
+      },
+      {
+        "encoding": [
+          1,
+          "src"
+        ],
+        "latency": 2,
+        "latency_mode": "strict",
+        "microcode": [
+          {
+            "a": "@src",
+            "action": "alu",
+            "op": "PRG",
+            "out": "@src"
+          }
+        ],
+        "name": "PRG",
+        "opcode": 1
       }
     ]
   },
+  "memory": {
+    "architecture": "von_neumann",
+    "endianness": "little",
+    "segments": [
+      {
+        "R": true,
+        "W": false,
+        "X": true,
+        "end": "0x7FFF",
+        "name": "ROM",
+        "start": "0x0000"
+      },
+      {
+        "R": true,
+        "W": true,
+        "X": false,
+        "end": "0xEFFF",
+        "name": "RAM",
+        "start": "0x8000"
+      },
+      {
+        "R": true,
+        "W": true,
+        "X": false,
+        "end": "0xFDFF",
+        "name": "MMIO",
+        "start": "0xF000"
+      },
+      {
+        "R": true,
+        "W": true,
+        "X": false,
+        "end": "0xFFFF",
+        "name": "STACK",
+        "start": "0xFE00"
+      }
+    ],
+    "size": 65536
+  },
+  "name": "16-Bit RISC Lab",
   "peripherals": [
     {
-      "name": "Terminal",
-      "type": "text_display",
+      "address_end": "0xF0FF",
       "address_start": "0xF000",
-      "address_end": "0xF0FF"
+      "name": "Terminal",
+      "registers": [],
+      "type": "text_display"
     },
     {
-      "name": "DuplexUART",
-      "type": "declarative",
-      "address_start": "0xF010",
       "address_end": "0xF011",
+      "address_start": "0xF010",
+      "name": "DuplexUART",
       "registers": [
         {
-          "name": "TX", "offset": 0, "size_bytes": 1, "access": "w", "initial": 0,
-          "on_write": [ { "type": "call", "func": "host_print", "args": ["value"] } ]
+          "access": "w",
+          "initial": 0,
+          "name": "TX",
+          "offset": 0,
+          "on_write": [
+            {
+              "args": [
+                "value"
+              ],
+              "func": "host_print",
+              "type": "call"
+            }
+          ],
+          "size_bytes": 1
         },
         {
-          "name": "RX", "offset": 1, "size_bytes": 1, "access": "r", "initial": 0,
-          "on_read": [ { "type": "assign", "target": "RX", "expr": "host_pop_char()" } ]
+          "access": "r",
+          "initial": 0,
+          "name": "RX",
+          "offset": 1,
+          "on_read": [
+            {
+              "expr": "host_pop_char()",
+              "target": "RX",
+              "type": "assign"
+            }
+          ],
+          "size_bytes": 1
         }
-      ]
+      ],
+      "type": "declarative"
     },
     {
-      "name": "WatchdogTimer",
-      "type": "declarative",
-      "address_start": "0xF020",
       "address_end": "0xF022",
-      "internal_state": { "LIMIT": 200, "COUNTDOWN": 200 },
+      "address_start": "0xF020",
+      "internal_state": {
+        "COUNTDOWN": 200,
+        "LIMIT": 200
+      },
+      "name": "WatchdogTimer",
       "registers": [
         {
-          "name": "KICK", "offset": 0, "size_bytes": 1, "access": "w", "initial": 0,
-          "on_write": [ { "type": "assign", "target": "COUNTDOWN", "expr": "LIMIT" } ]
+          "access": "w",
+          "initial": 0,
+          "name": "KICK",
+          "offset": 0,
+          "on_write": [
+            {
+              "expr": "LIMIT",
+              "target": "COUNTDOWN",
+              "type": "assign"
+            }
+          ],
+          "size_bytes": 1
         },
-        { "name": "REMAINING", "offset": 1, "size_bytes": 2, "access": "r", "initial": 200 }
+        {
+          "access": "r",
+          "initial": 200,
+          "name": "REMAINING",
+          "offset": 1,
+          "size_bytes": 2
+        }
       ],
       "tick_behavior": [
-        { "type": "assign", "target": "COUNTDOWN", "expr": "COUNTDOWN - 1" },
-        { "type": "assign", "target": "REMAINING", "expr": "COUNTDOWN" },
         {
-          "type": "if",
+          "expr": "COUNTDOWN - 1",
+          "target": "COUNTDOWN",
+          "type": "assign"
+        },
+        {
+          "expr": "COUNTDOWN",
+          "target": "REMAINING",
+          "type": "assign"
+        },
+        {
           "condition": "COUNTDOWN <= 0",
           "then": [
-            { "type": "assign", "target": "COUNTDOWN", "expr": "LIMIT" },
-            { "type": "call", "func": "trigger_interrupt", "args": ["0x0020"] }
-          ]
+            {
+              "expr": "LIMIT",
+              "target": "COUNTDOWN",
+              "type": "assign"
+            },
+            {
+              "args": [
+                "0x0020"
+              ],
+              "func": "trigger_interrupt",
+              "type": "call"
+            }
+          ],
+          "type": "if"
         }
-      ]
+      ],
+      "type": "declarative"
     },
     {
-      "name": "InterruptController",
-      "type": "declarative",
-      "address_start": "0xF030",
       "address_end": "0xF035",
+      "address_start": "0xF030",
+      "name": "InterruptController",
       "registers": [
-        { "name": "PENDING", "offset": 0, "size_bytes": 2, "access": "rw", "initial": 0 },
-        { "name": "MASK", "offset": 2, "size_bytes": 2, "access": "rw", "initial": 0 },
         {
-          "name": "RAISE", "offset": 4, "size_bytes": 2, "access": "w", "initial": 0,
-          "on_write": [ { "type": "assign", "target": "PENDING", "expr": "PENDING | value" } ]
+          "access": "rw",
+          "initial": 0,
+          "name": "PENDING",
+          "offset": 0,
+          "size_bytes": 2
+        },
+        {
+          "access": "rw",
+          "initial": 0,
+          "name": "MASK",
+          "offset": 2,
+          "size_bytes": 2
+        },
+        {
+          "access": "w",
+          "initial": 0,
+          "name": "RAISE",
+          "offset": 4,
+          "on_write": [
+            {
+              "expr": "PENDING | value",
+              "target": "PENDING",
+              "type": "assign"
+            }
+          ],
+          "size_bytes": 2
         }
       ],
       "tick_behavior": [
         {
-          "type": "if",
           "condition": "(PENDING & MASK) != 0",
           "then": [
-            { "type": "call", "func": "trigger_interrupt", "args": ["0x0030"] },
-            { "type": "assign", "target": "PENDING", "expr": "PENDING & (PENDING - 1)" }
-          ]
+            {
+              "args": [
+                "0x0030"
+              ],
+              "func": "trigger_interrupt",
+              "type": "call"
+            },
+            {
+              "expr": "PENDING & (PENDING - 1)",
+              "target": "PENDING",
+              "type": "assign"
+            }
+          ],
+          "type": "if"
         }
-      ]
+      ],
+      "type": "declarative"
     },
     {
-      "name": "PWMController",
-      "type": "declarative",
-      "address_start": "0xF040",
       "address_end": "0xF044",
-      "internal_state": { "COUNTER": 0 },
+      "address_start": "0xF040",
+      "internal_state": {
+        "COUNTER": 0
+      },
+      "name": "PWMController",
       "registers": [
-        { "name": "DUTY", "offset": 0, "size_bytes": 1, "access": "rw", "initial": 0 },
-        { "name": "PERIOD", "offset": 1, "size_bytes": 1, "access": "rw", "initial": 100 },
-        { "name": "OUTPUT", "offset": 2, "size_bytes": 1, "access": "r", "initial": 0 }
+        {
+          "access": "rw",
+          "initial": 0,
+          "name": "DUTY",
+          "offset": 0,
+          "size_bytes": 1
+        },
+        {
+          "access": "rw",
+          "initial": 100,
+          "name": "PERIOD",
+          "offset": 1,
+          "size_bytes": 1
+        },
+        {
+          "access": "r",
+          "initial": 0,
+          "name": "OUTPUT",
+          "offset": 2,
+          "size_bytes": 1
+        }
       ],
       "tick_behavior": [
-        { "type": "assign", "target": "COUNTER", "expr": "(COUNTER + 1) % PERIOD" },
         {
-          "type": "if",
+          "expr": "(COUNTER + 1) % PERIOD",
+          "target": "COUNTER",
+          "type": "assign"
+        },
+        {
           "condition": "COUNTER < DUTY",
-          "then": [ { "type": "assign", "target": "OUTPUT", "expr": "1" } ],
-          "else": [ { "type": "assign", "target": "OUTPUT", "expr": "0" } ]
+          "else": [
+            {
+              "expr": "0",
+              "target": "OUTPUT",
+              "type": "assign"
+            }
+          ],
+          "then": [
+            {
+              "expr": "1",
+              "target": "OUTPUT",
+              "type": "assign"
+            }
+          ],
+          "type": "if"
         }
-      ]
+      ],
+      "type": "declarative"
     }
-  ]
+  ],
+  "registers": {
+    "general_purpose": [
+      {
+        "initial": 0,
+        "name": "R0",
+        "sub_registers": [
+          {
+            "name": "R0H",
+            "offset": 8,
+            "width": 8
+          },
+          {
+            "name": "R0L",
+            "offset": 0,
+            "width": 8
+          }
+        ],
+        "width": 16
+      },
+      {
+        "initial": 0,
+        "name": "R1",
+        "sub_registers": [
+          {
+            "name": "R1H",
+            "offset": 8,
+            "width": 8
+          },
+          {
+            "name": "R1L",
+            "offset": 0,
+            "width": 8
+          }
+        ],
+        "width": 16
+      },
+      {
+        "initial": 0,
+        "name": "R2",
+        "width": 16
+      },
+      {
+        "initial": 0,
+        "name": "R3",
+        "width": 16
+      },
+      {
+        "initial": 0,
+        "name": "R4",
+        "width": 16
+      },
+      {
+        "initial": 0,
+        "name": "R5",
+        "width": 16
+      },
+      {
+        "initial": 0,
+        "name": "R6",
+        "width": 16
+      },
+      {
+        "initial": 0,
+        "name": "R7",
+        "width": 16
+      }
+    ],
+    "special": [
+      {
+        "initial": 0,
+        "name": "PC",
+        "role": "program_counter",
+        "width": 16
+      },
+      {
+        "initial": 65534,
+        "name": "SP",
+        "role": "stack_pointer",
+        "width": 16
+      },
+      {
+        "initial": 0,
+        "name": "FLAGS",
+        "role": "status_flags",
+        "width": 16
+      }
+    ]
+  }
 }

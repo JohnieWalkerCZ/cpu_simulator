@@ -26,6 +26,15 @@ TESTS=(
     "test_decoder"
     "test_assembler"
     "test_cpu_integration"
+    "test_instruction_preview"
+    "test_config_diagnostics"
+    "test_microop_editor"
+    "test_register_layout"
+    "test_hook_editor"
+    "test_undo_history"
+    "test_app_settings"
+    "test_duplicate"
+    "test_example_items"
 )
 
 PASSED=0
