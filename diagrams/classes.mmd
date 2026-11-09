@@ -13,7 +13,7 @@ classDiagram
     note for Config "word_t (wide_int.hpp) backs every register/address value in the engine -- a 128-bit integer type supporting bus widths from 4 to 128 bits"
 
     class CPU {
-        -Config cfg_
+        -Config &cfg_
         -RegisterFile regs_
         -Memory mem_
         -ALU alu_
@@ -60,13 +60,14 @@ classDiagram
         +port_write(word_t port, value)
         +is_valid_address(word_t address) bool
     }
-    note for Memory "64 KB pages, lazily allocated on first write -- an address space up to 2^128 can be configured without eager allocation"
+    note for Memory "64 KB pages, lazily allocated on first write -- addresses use up to 128 bits without eager allocation"
 
     class ALU {
-        -Config config_
+        -const Config &config_
         -word_t mask_
         -word_t sign_bit_
         -unordered_map~string, vector~Token~~ compiled_ops_
+        -unordered_map~string, vector~ProgStmt~~ compiled_programs_
         +execute(op_name, a, b, c, width) FullResult
         -compile_expressions()
         -tokenize(expr) vector~Token~
@@ -75,10 +76,10 @@ classDiagram
     }
 
     class Executor {
-        -Config config_
-        -RegisterFile regs_
-        -Memory mem_
-        -ALU alu_
+        -Config &config_
+        -RegisterFile &regs_
+        -Memory &mem_
+        -ALU &alu_
         -Decoder decoder_
         -ExecutionState state_
         -bool pc_modified_
@@ -92,7 +93,7 @@ classDiagram
     }
 
     class DeclarativePeripheral {
-        -CPU cpu_
+        -CPU &cpu_
         -PeripheralDef def_
         -unordered_map~string, word_t~ registers_
         -unordered_map~string, word_t~ internal_vars_
@@ -104,7 +105,7 @@ classDiagram
 
     class Instruction {
         +string name
-        +uint8_t opcode
+        +uint16_t opcode
         +vector~int~ encoding
         +vector~MicroOp~ microcode
         +int execution_latency
@@ -131,6 +132,11 @@ classDiagram
         +json tick_behavior
     }
 
+    class Decoder {
+        +decode(raw_bits, fetched_bits) DecodedInstruction
+        +peek_opcode(first_unit) uint16_t
+    }
+
     class LatencyMode {
         <<enumeration>>
         DYNAMIC
@@ -139,7 +145,7 @@ classDiagram
         ADDITIVE
     }
 
-    CPU *-- Config : contains
+    CPU o-- Config : references
     CPU *-- RegisterFile : contains
     CPU *-- Memory : contains
     CPU *-- ALU : contains
@@ -148,6 +154,7 @@ classDiagram
     Executor o-- RegisterFile : interacts with
     Executor o-- Memory : interacts with
     Executor o-- ALU : interacts with
+    Executor *-- Decoder : contains
     DeclarativePeripheral o-- CPU : triggers interrupts/writes
     Instruction o-- LatencyMode : uses
     Config o-- Instruction : contains

@@ -20,21 +20,21 @@ The simulator includes a dynamic multi-pass assembler, a microcoded instruction 
 
 ### 3. Flexible Memory & Protection Subsystem
 * Toggleable memory architecture topologies supporting either **Von Neumann** (unified) or **Harvard** (isolated code and data spaces).
-* Address ranges and memory segments support a full **64-bit absolute address space** ($2^{64}-1$), avoiding 32-bit truncation limitations on high-width address buses.
+* Addresses and segment boundaries use the configured address width, up to 128 bits; memory pages are allocated lazily.
 * Byte ordering configurable as Big-Endian or Little-Endian.
 * Strict segment-level memory access checks for Read (`R`), Write (`W`), and Execute (`X`) privileges, throwing diagnostic hardware faults on illegal memory access.
 
 ### 4. Expression-Based ALU Engine
-* Custom ALU operations are written directly as standard math expressions in JSON.
+* Custom ALU operations can use expressions or small programs with variables, branches and loops in JSON.
 * A hand-rolled tokenizer and Shunting-Yard compiler parses infix mathematical expressions into Reverse Polish Notation (RPN) for high-performance evaluation.
 * Custom flag-evaluation rules update the `$FLAGS` register based on default rules (such as zero, negative, carry addition/subtraction, and signed overflow logic) or custom logical expressions.
 
 ### 5. Microcode Control Unit
 * CPU execution runs through discrete states: `FETCH`, `DECODE`, `EXECUTE_UOPS`, and `DONE`.
 * Instructs the execution engine via a micro-operation list including `copy`, `alu`, `mem_read`, `mem_write`, `port_read`, `port_write`, `coproc_read`, `coproc_write`, `branch`, and `halt`.
-* Supports both **dynamic execution** (one micro-op per clock cycle, stalling for multi-cycle ALU operations) and **strict instruction-level latency overrides**.
+* Supports dynamic, strict, bottleneck and additive execution latency modes, including multi-cycle ALU operations.
 * Latency overrides mathematically distribute micro-operation execution: compressing multiple side effects into fewer clock cycles (down to a single-cycle execution phase) or padding execution with pipeline stalls to match exact hardware timing specifications.
-* Implements vectored hardware interrupts: on trigger, the executor automatically pushes the return PC to the stack and vectors to the handler address; the handler returns via a normal `RET` instruction, the same as any subroutine call.
+* Implements vectored hardware interrupts: on trigger, the executor pushes the return PC when an SP register exists and sets PC to the interrupt ID; the handler returns via a normal `RET` instruction, the same as any subroutine call.
 
 ### 6. Declarative MMIO Peripherals
 * Define functional hardware devices directly in the JSON file.
@@ -46,76 +46,16 @@ The simulator includes a dynamic multi-pass assembler, a microcoded instruction 
 ## Project Structure
 
 ```text
-.
-├── CMakeLists.txt                  # Build configuration for CMake
-├── configs                         # JSON CPU configuration files
-│   ├── 8bit.json
-│   ├── 8bit_harvard.json
-│   ├── 16bit.json
-│   ├── 16bit_lab.json
-│   └── tiny4.json
-├── CONFIGURATION.md                # Configuration reference manual
-├── diagrams                        # Architecture and execution diagrams
-│   ├── classes.mmd                 # Class diagram
-│   ├── classes.png
-│   ├── complete.mmd                # System overview flowchart
-│   ├── complete.png
-│   ├── executor.mmd                # Executor state machine
-│   ├── executor.png
-│   ├── generate_images.sh          # Script to convert .mmd to .png
-│   ├── microop.mmd                 # Micro-operation flowchart
-│   └── microop.png
-├── README.md                       # Main manual and build guide
-├── src                             # Source code
-│   ├── core                        # Core simulator engine
-│   │   ├── alu                     # ALU (expression tokenizer & parser)
-│   │   │   ├── alu.cpp
-│   │   │   └── alu.hpp
-│   │   ├── assembly                # Assembler (binary translation & label resolver)
-│   │   │   ├── assembler.cpp
-│   │   │   └── assembler.hpp
-│   │   ├── config.cpp              # JSON configuration loader & validator
-│   │   ├── config.hpp
-│   │   ├── cpu.cpp                 # System loop coordinator
-│   │   ├── cpu.hpp
-│   │   ├── execution               # Decoder & Executor pipeline
-│   │   │   ├── decoder.cpp
-│   │   │   ├── decoder.hpp
-│   │   │   ├── executor.cpp
-│   │   │   └── executor.hpp
-│   │   ├── memory                  # Memory (permissions, endianness, MMIO)
-│   │   │   ├── memory.cpp
-│   │   │   └── memory.hpp
-│   │   ├── peripherals             # Declarative MMIO peripherals
-│   │   │   ├── declarative_peripheral.cpp
-│   │   │   └── declarative_peripheral.hpp
-│   │   └── registers               # Register file (aliasing, masks, offsets)
-│   │       ├── register_file.cpp
-│   │       └── register_file.hpp
-│   ├── ui                          # ImGui dashboard panels
-│   │   ├── ui_alu_monitor.hpp
-│   │   ├── ui_assembler.hpp
-│   │   ├── ui_common.hpp           # Shared GUIState, snapshots, bus highlighting
-│   │   ├── ui_configurator.hpp     # Graphical CPU configurator (forms + JSON view)
-│   │   ├── app_launcher.hpp        # Two-way launch helper (sim <-> configurator)
-│   │   ├── ui_control_tower.hpp
-│   │   ├── ui_cpu.hpp
-│   │   ├── ui_cpu_pointlist.hpp
-│   │   ├── ui_memory.hpp
-│   │   ├── ui_microcode_pipeline.hpp
-│   │   ├── ui_peripherals.hpp
-│   │   ├── ui_register_file.hpp
-│   │   └── ui_system_schematic.hpp
-│   └── main.cpp                    # SDL2/OpenGL/ImGui entry point & main loop
-│   └── configurator_main.cpp       # Entry point for the CPU configurator
-└── tests                           # Unit and integration test suites
-    ├── test_alu_operations.cpp
-    ├── test_assembler.cpp
-    ├── test_config_parser.cpp
-    ├── test_cpu_integration.cpp
-    ├── test_decoder.cpp
-    ├── test_memory.cpp
-    └── test_register_file.cpp
+configs/               Example JSON architectures
+diagrams/              Mermaid source diagrams and PNG generator
+src/core/              CPU, configuration, assembler, memory and execution engine
+src/ui/                Simulator panels and graphical configurator
+src/main.cpp           Simulator entry point
+src/configurator_main.cpp  Configurator entry point
+tests/                 Core and configurator tests
+README.cs.md           Czech overview
+CONFIGURATION.md       Configuration reference
+CONFIGURATION.cs.md    Czech configuration overview
 ```
 ---
 
@@ -125,7 +65,7 @@ The architecture is documented visually using [Mermaid](https://mermaid.js.org/)
 * **`complete.mmd`**: The entire hardware loop, connecting the memory spaces, register routing, execution pipelines, and declarative peripherals.
 * **`classes.mmd`**: Object relationships and class structure interfaces.
 * **`executor.mmd`**: The internal control unit state machine transitions.
-* **`microop.mmd`**: Micro-operation flow, cycle latency stalling, and operand resolution pathways.
+* **`microop.mmd`**: Micro-operation actions and their effects.
 
 ### Generating PNG Diagrams
 High-resolution `.png` images are compiled from the `.mmd` source files using the `mermaid-cli` compiler utility (`mmdc`).
@@ -165,11 +105,11 @@ done
 
 ### Requirements
 To compile the project, ensure your development environment has:
-* A compiler supporting C++17 or higher (or C++26 as configured).
+* A compiler and CMake toolchain supporting the configured C++26 standard.
 * CMake (3.20+).
 * SDL2 development libraries.
 * OpenGL drivers.
-* `nlohmann/json` library (integrated or fetched via dependency downloaders).
+* Network access for CMake FetchContent to obtain nlohmann/json and Dear ImGui on the first build.
 
 ### Compilation Steps
 1. Clone the repository and navigate to its root directory.
@@ -330,7 +270,7 @@ Each primary module has a dedicated verification suite under the testing pipelin
 * **Decoder Pipeline Suite (`test_decoder`):** Verifies binary parsing, bitfield extraction, and safety handling of invalid register indices.
 * **Integrated CPU Suite (`test_cpu_integration`):** Simulates complex multi-cycle program execution, declarative peripheral handshakes, and hardware stack-saving ISR cycles.
 
-To execute the verification suite, run the following command within your build directory:
+The suite also covers configurator previews, diagnostics, editors, undo history and settings. To execute all registered tests, run the following command within your build directory:
 ```bash
 ctest --output-on-failure
 ```

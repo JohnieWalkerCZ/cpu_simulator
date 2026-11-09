@@ -66,8 +66,8 @@ The `memory` object defines the memory map, size, and access policies.
 *   **Type:** `object`
 *   **Description:** Defines a contiguous block of memory with specific access rules.
     *   **`name`** (`string`): A human-readable name for the segment (e.g., `"ROM"`, `"RAM"`, `"STACK"`).
-    *   **`start`** (`string` or `integer`): The starting memory address of the segment. Can be specified in decimal or hexadecimal (e.g., `"0x0000"`). Supports full **64-bit address limits**.
-    *   **`end`** (`string` or `integer`): The ending memory address of the segment. Can be specified in decimal or hexadecimal. Supports full **64-bit address limits**.
+    *   **`start`** (`string` or `integer`): The starting memory address of the segment. Can be specified in decimal or hexadecimal (e.g., `"0x0000"`). Supports the configured address width, up to 128 bits.
+    *   **`end`** (`string` or `integer`): The ending memory address of the segment. Can be specified in decimal or hexadecimal. Supports the configured address width, up to 128 bits.
     *   **`R`** (`boolean`): If `true`, read access is permitted within this segment.
     *   **`W`** (`boolean`): If `true`, write access is permitted within this segment.
     *   **`X`** (`boolean`): If `true`, execute access is permitted within this segment.
@@ -90,7 +90,7 @@ The `registers` object defines all the registers accessible to the CPU, categori
 *   **Description:** Defines a single register.
     *   **`name`** (`string`): The unique identifier for this register. This is used in assembly code and internally by the simulator.
     *   **`width`** (`integer`): The bit-width of this register.
-    *   **`initial`** (`integer`): The value the register should be initialized to upon CPU reset. Supports full 64-bit initialization.
+    *   **`initial`** (`integer`): The value the register should be initialized to upon CPU reset. Supports values up to the register width (128 bits).
     *   **`role`** (`string`, optional): Assigns a special role to the register. Supported roles include:
         *   `"program_counter"` or `"pc"`: The instruction pointer.
         *   `"stack_pointer"` or `"sp"`: Points to the current top of the stack.
@@ -198,7 +198,7 @@ The `instruction_set` object defines the machine code and execution flow for the
     *   **`opcode`** (`integer`): The primary numeric opcode for this instruction.
     *   **`latency`** (`integer`, optional, default: `-1`): Sets the baseline clock cycle budget for the `EXECUTE_UOPS` phase. Used in tandem with `latency_mode`.
     *   **`latency_mode`** (`string`, optional, default: `"dynamic"`): Governs how instruction-level latency interacts with internal micro-operations and multi-cycle ALU functional units. Supported behaviors:
-        *   `"dynamic"`: Standard sequential mode. The instruction execution phase takes exactly as many cycles as it has micro-operations, ignoring any instruction-level `latency` property.
+        *   `"dynamic"`: Standard sequential mode. The instruction execution phase runs micro-operations sequentially, respecting ALU operation latency and ignoring instruction-level `latency`.
         *   `"strict"` (or `"fixed"`): Enforces a rigid execution window of exactly `latency` cycles. If there are too many micro-ops, multiple operations are compressed and executed simultaneously in single clock cycles to fit the budget. If there are too few, execution stretches and padding cycles are automatically inserted.
         *   `"bottleneck"` (or `"max"`): Emulates a realistic variable-latency pipeline. The execution phase takes the maximum of either the instruction `latency` threshold or the cumulative cycle durations of the underlying micro-operations and stalled ALU units.
         *   `"additive"`: Appends the instruction-level `latency` value as static structural or write-back overhead cycles that run directly after the dynamic micro-operation sequence has fully completed.
@@ -279,7 +279,7 @@ The `peripherals` array allows defining custom hardware components that interact
 *   **Type:** `object`
 *   **Description:** Defines a single MMIO register within a peripheral.
     *   **`name`** (`string`): The name of the register (used in AST logic).
-    *   **`offset`** (`integer`): The offset from the peripheral's `address_start` to this register. Supports full 64-bit address offsets.
+    *   **`offset`** (`integer`): The offset from the peripheral's `address_start` to this register. Parsed as an integer offset.
     *   **`size_bytes`** (`integer`, optional, default: `1`): The size of the register in bytes.
     *   **`access`** (`string`, optional, default: `"rw"`): Defines read/write permissions (e.g., `"r"`, `"w"`, `"rw"`).
     *   **`initial`** (`integer`): The reset value of the register.
