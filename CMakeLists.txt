@@ -78,11 +78,17 @@ target_link_libraries(cpu_core PUBLIC nlohmann_json)
 add_executable(cpu_sim
     src/main.cpp
 )
+if(WIN32 AND TARGET SDL2::SDL2main)
+    target_link_libraries(cpu_sim SDL2::SDL2main)
+endif()
 target_link_libraries(cpu_sim cpu_core imgui SDL2::SDL2 ${OPENGL_LIBRARIES} ${CMAKE_DL_LIBS})
 
 add_executable(cpu_configurator
     src/configurator_main.cpp
 )
+if(WIN32 AND TARGET SDL2::SDL2main)
+    target_link_libraries(cpu_configurator SDL2::SDL2main)
+endif()
 target_link_libraries(cpu_configurator cpu_core imgui SDL2::SDL2 ${OPENGL_LIBRARIES} ${CMAKE_DL_LIBS})
 
 enable_testing()
