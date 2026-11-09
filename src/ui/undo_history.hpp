@@ -65,7 +65,11 @@ class UndoHistory {
             return std::nullopt;
         future_.push_back(past_.back());
         past_.pop_back();
-        return past_.back();
+        // In-place construction: a plain `return past_.back();` is
+        // ambiguous, because json has a conversion operator to
+        // optional<json> (via get<optional<json>>()) that competes
+        // with optional's converting constructor.
+        return std::optional<nlohmann::json>{std::in_place, past_.back()};
     }
 
     // Redo one step: move the most recently undone state back onto
@@ -76,7 +80,9 @@ class UndoHistory {
             return std::nullopt;
         past_.push_back(future_.back());
         future_.pop_back();
-        return past_.back();
+        // In-place construction: see undo() for why a plain
+        // `return past_.back();` is ambiguous here.
+        return std::optional<nlohmann::json>{std::in_place, past_.back()};
     }
 
     // Drop every snapshot and forget the saved state.
@@ -91,7 +97,9 @@ class UndoHistory {
     // (LoadFromFile / LoadTemplate do exactly that).
     void markSaved() {
         if (!past_.empty())
-            saved_ = past_.back();
+            // emplace, not assignment: `saved_ = past_.back();` hits
+            // the same json-to-optional<json> ambiguity as undo().
+            saved_.emplace(past_.back());
     }
 
     // True when `current` equals the state recorded by the last
@@ -110,7 +118,9 @@ class UndoHistory {
     std::optional<nlohmann::json> current() const {
         if (past_.empty())
             return std::nullopt;
-        return past_.back();
+        // In-place construction: see undo() for why a plain
+        // `return past_.back();` is ambiguous here.
+        return std::optional<nlohmann::json>{std::in_place, past_.back()};
     }
 
   private:
